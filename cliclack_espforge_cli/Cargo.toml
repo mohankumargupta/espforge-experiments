@@ -1,0 +1,10 @@
+[package]
+name = "cliclack_espforge_cli"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+anyhow = "1.0.104"
+clap = "4.6.7"
+cliclack = "0.5.6"
+tokio = { version = "1.53.2", features = ["full"] }
