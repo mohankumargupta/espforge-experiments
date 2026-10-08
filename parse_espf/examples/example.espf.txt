@@ -1,0 +1,30 @@
+--- ==============================================================
+--- ESPF file format
+--- mandatory sections: espforge, peripherals, components, devices
+--- ==============================================================
+
+# espforge
+  <project name="example project" description="example showing espf file format" />
+  <chip type="esp32c3" />
+  <runtime type="blocking" />
+
+# peripherals
+  <gpio id="gpio4" pin="4" />
+  <gpio id="gpio5" pin="5" />
+  <i2c  id="i2c0" sda="8" scl="9" frequency="400kHz" />
+  <spi  id="spi2" sclk="6" mosi="7" /> --- displays generally omit miso
+  <uart id="uart1" tx="20" rx="21" />
+
+# components
+  <gpio_component id="blue_led"    gpio="$gpio4" direction="output" />
+  <i2c_component  id="temp_bus"    i2c="$i2c0" address="0x48" />
+  <spi_component  id="display_bus" spi="$spi2" mode="0" cs="$gpio5" frequency="40MHz" />
+  <uart_component id="serial_bus"  uart="$uart1" baud_rate="9600" parity="none" stop_bits="1" />
+
+# devices
+  <status_led     id="status"       gpio_component="$blue_led" />
+  <tmp102         id="outdoor_temp" i2c_component="$temp_bus" />
+  <ili9341        id="tft_display"  
+                  spi_component="$display_bus" />
+
+

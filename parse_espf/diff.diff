@@ -1,0 +1,69 @@
+--- a/src/main.rs
++++ b/src/main.rs
+@@ -887,25 +887,56 @@
+   <ili9341    id="tft_display"  spi_component="display_bus" />
+ "##;
+ 
++fn print_summary(cfg: &Espf) {
++    println!("Successfully parsed!");
++    println!("  Project:     {}", cfg.project.name);
++    println!("  Chip:        {}", cfg.chip.name());
++    println!("  Runtime:     {:?}", cfg.runtime);
++    println!("  Peripherals: {}", cfg.peripherals.len());
++    println!("  Components:  {}", cfg.components.len());
++    for d in &cfg.devices {
++        println!("  Device:      {} `{}` -> {:?}", d.kind, d.id, d.refs);
++    }
++}
++
+ fn run(title: &str, src: &str) {
+     println!("\n--- {title} ---");
+     match parse_espf(src) {
+-        Ok(cfg) => {
+-            println!("Successfully parsed!");
+-            println!("  Project:     {}", cfg.project.name);
+-            println!("  Chip:        {}", cfg.chip.name());
+-            println!("  Runtime:     {:?}", cfg.runtime);
+-            println!("  Peripherals: {}", cfg.peripherals.len());
+-            println!("  Components:  {}", cfg.components.len());
+-            for d in &cfg.devices {
+-                println!("  Device:      {} `{}` -> {:?}", d.kind, d.id, d.refs);
+-            }
+-        }
++        Ok(cfg) => print_summary(&cfg),
+         Err(msg) => println!("{msg}"),
+     }
+ }
+ 
++const USAGE: &str = "usage: espf_parser <file.espf>\n       espf_parser --demo";
++
+ fn main() {
++    let args: Vec<String> = std::env::args().skip(1).collect();
++    match args.as_slice() {
++        [flag] if flag == "--demo" => demo(),
++        [path] => {
++            let src = match std::fs::read_to_string(path) {
++                Ok(s) => s,
++                Err(e) => {
++                    eprintln!("error: cannot read `{path}`: {e}");
++                    std::process::exit(2);
++                }
++            };
++            match parse_espf(&src) {
++                Ok(cfg) => print_summary(&cfg),
++                Err(msg) => {
++                    eprintln!("{path}: {msg}");
++                    std::process::exit(1);
++                }
++            }
++        }
++        _ => {
++            eprintln!("{USAGE}");
++            std::process::exit(2);
++        }
++    }
++}
++
++fn demo() {
+     // Scenario A: happy path
+     run("A: valid file", VALID);

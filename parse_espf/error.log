@@ -1,0 +1,11 @@
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.03s
+     Running `target/debug/parse_espf examples/example.espf.txt`
+examples/example.espf.txt: Invalid ESPF:
+error: `cs="gpio5"` must be a reference: write `cs="$gpio5"`
+   --> line 21, column 3
+   |
+21 |   <spi_component  id="display_bus" spi="$spi2" mode="0" cs="gpio5" frequency="40MHz" />
+   |   ^
+
+1 error(s)
+
