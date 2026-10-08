@@ -1,0 +1,8 @@
+[package]
+name = "parsing_toml"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+winnow = "0.7"
+num-traits = "0.2"
