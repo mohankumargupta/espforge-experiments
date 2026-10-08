@@ -1,0 +1,16 @@
+use solely winnow and manual parsing, there should be no manual parsing at all, 
+
+
+also apply these performance tips 
+# Winnow Performance Tips
+
+## Runtime Performance
+* **Enable SIMD:** Run `cargo add winnow -F simd` for a performance boost.
+* **Use Dispatch:** Prefer `dispatch` over `alt` when branches have unique prefixes.
+* **Parse Bytes:** Work with `u8` bytes instead of `char` (use `BStr` to aid debugging).
+* **Fast Path Falling Back:** Parse a simplified, common subset of the grammar first (e.g., strings without escape characters), falling back to the full grammar only on failure.
+* **Watch Return Sizes:** Beware of large return types, which frequently occur when chaining parsers inside a tuple.
+
+## Build-time Performance
+* **Simplify Complex Types:** Returning heavily chained combinators via `impl Parser` slows down compilation.
+* **Wrap in Closures:** Wrap complex combinator chains inside a closure using `move |input: &mut I|` and call `.parse_next(input)` to reduce type complexity and speed up build times.

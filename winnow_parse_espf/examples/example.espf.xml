@@ -1,0 +1,60 @@
+
+--- ====================
+    ESPF file format
+    sections mandatory: espforge, peripherals, components, devices
+--- ======================
+
+--- ==========================
+--- ESPFORGE section
+--- chip:    esp32c3, esp32c6
+--- runtime: blocking, embassy
+--- ==========================
+# espforge
+  <project name="example project" description="example showing espf file format" />
+  <chip type="esp32c3" />
+  <runtime type="blocking" />
+ 
+--- ==============================================================================
+--- PERIPHERALS section
+--- secondary headings: gpio, i2c, spi, uart
+--- ==============================================================================
+# peripherals
+  ## gpio
+     <gpio id="gpio4" pin="4" />
+     <gpio id="gpio5" pin="5" />
+     
+  ## i2c
+     <i2c id="i2c0" bus="0" sda="21" scl="22" frequency="400kHz" />
+
+  ## spi
+     --- displays generally omit miso
+     <spi id="spi2" bus="2" sclk="18" mosi="23" miso="19" />
+
+  ## uart
+     <uart id="uart1" tx="17" rx="16" />
+  
+--- ==============================================================================
+--- COMPONENTS section
+--- secondary sections: gpio_component, i2c_component, spi_component
+--- uart_component
+--- ==============================================================================
+# components
+  <gpio_component id="blue_led" gpio="gpio4" direction="output" />
+  <i2c_component i2c="i2c0" address="0x48" />
+  <spi_component spi="spi2" mode="0" cs="gpio5" frequency="40Mhz" />
+  <uart_component uart="uart1" baud_rate="9600" parity="none" stop_bits="1" />
+
+--- ==============================================================================
+--- DEVICES section
+--- ==============================================================================
+# devices
+  ## light
+     <status_led id="is_raining" gpio_component="status_led_io" />
+
+  ## environment_sensor
+    <tmp102 id="" i2c_component = "temp_sensor_bus" />
+
+  ## display
+  <ili9341 id="tft_display" spi_component="display_bus" />
+
+

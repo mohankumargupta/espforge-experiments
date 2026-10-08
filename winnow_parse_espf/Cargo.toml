@@ -1,0 +1,7 @@
+[package]
+name = "winnow_parse_espf"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+winnow = { version = "0.6", features = ["simd"] }
