@@ -1,13 +1,8 @@
---- ==============================================================
---- ESPF file format
---- mandatory sections: espforge, peripherals, components, devices
---- ==============================================================
-
 # espforge
   <project name="example project" 
            description="example showing espf file format" />
   <chip type="esp32c3" />
-  <runtime type="blocking" />
+  <runtime type="blocking />
 
 # peripherals
   <gpio id="gpio4" pin="4" />
@@ -15,3 +10,4 @@
   <i2c  id="i2c0" sda="8" scl="9" frequency="400kHz" />
   <spi  id="spi2" sclk="6" mosi="7" /> --- displays generally omit miso
   <uart id="uart1" tx="20" rx="21" />
+

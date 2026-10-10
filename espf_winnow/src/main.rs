@@ -28,6 +28,9 @@ pub struct EspForgeSection {
 enum Line<'a> {
     Section(&'a str),
     Tag(&'a str),
+    /// A `--- ...` comment line: skipped mid-tag, so a multi-line element can
+    /// carry interleaved comments.
+    Comment,
     Ignore,
 }
 
@@ -123,7 +126,11 @@ pub fn parse_to_leaf_table(source: &str) -> Result<LeafTable, ParseDiagnostic> {
             .with_span()
             .parse_next(&mut input)
             .map_err(|error:    winnow::error::ContextError| {
-                diagnostic_at_current(source, &input, format!("Could not read line: {error:?}"))
+                diagnostic_at_current(
+                    source,
+                    input.current_token_start(),
+                    format!("Could not read line: {error:?}"),
+                )
             })?;
 
         // Consume the line ending, if present.
@@ -136,19 +143,22 @@ pub fn parse_to_leaf_table(source: &str) -> Result<LeafTable, ParseDiagnostic> {
             Line::Section(name) => section = Some(name),
 
             Line::Tag(tag_tail) => {
+                let (tag_body, tag_span) =
+                    finish_tag_body(&mut &mut input, source, line_span.clone(), tag_tail)?;
+
                 let current_section = section.ok_or_else(|| {
                     ParseDiagnostic::new(
                         source,
-                        line_span.clone(),
+                        tag_span.clone(),
                         "Tag encountered before a section heading",
                     )
                 })?;
 
-                insert_tag(current_section, tag_tail, &mut table.fields)
-                    .map_err(|message| ParseDiagnostic::new(source, line_span.clone(), message))?;
+                insert_tag(current_section, tag_body.strip_prefix('<').unwrap_or(&tag_body), &mut table.fields)
+                    .map_err(|message| ParseDiagnostic::new(source, tag_span, message))?;
             }
 
-            Line::Ignore => {}
+            Line::Ignore | Line::Comment => {}
         }
     }
 
@@ -167,25 +177,145 @@ impl EspForgeSection {
     }
 }
 
-// -----------------------------------------------------------------------------
-// Diagnostics
-// -----------------------------------------------------------------------------
-
-fn diagnostic_at_current<I>(
+fn diagnostic_at_current(
     source: &str,
-    input: &LocatingSlice<I>,
+    offset: usize,
     message: impl Into<String>,
-) -> ParseDiagnostic
-where
-    I: Clone + winnow::stream::Offset,
-{
-    let offset = input.current_token_start();
-
+) -> ParseDiagnostic {
     ParseDiagnostic::new(
         source,
         offset..offset.saturating_add(1).min(source.len()),
         message,
     )
+}
+
+// -----------------------------------------------------------------------------
+// Tag body accumulation
+// -----------------------------------------------------------------------------
+
+/// Why we stopped scanning: the tag is complete, or something is wrong.
+enum TagBodyEnd {
+    Complete,
+    /// A tag was never opened (first char isn't `<`) or already closed.
+    NoOpenTag,
+    /// Reached EOF without a tag name and closing `>`.
+    Unclosed,
+}
+
+/// Returns true if the byte at byte index `index` lies outside any quoted
+/// attribute value that precedes it in `body`.
+fn is_outside_quotes(body: &str, index: usize) -> bool {
+    let quote_count = body[..index].as_bytes().iter().filter(|&&b| b == b'"').count();
+
+    // An even number of preceding quotes means we are outside a value.
+    quote_count.is_multiple_of(2)
+}
+
+/// Classify a finished tag body: has it seen a name and a closing `>` outside
+/// of any quoted attribute value, preceded by only whitespace/comment text?
+fn classify_tag_body(body: &str) -> TagBodyEnd {
+    let Some(open) = body.find('<') else {
+        return TagBodyEnd::NoOpenTag;
+    };
+
+    // The tag must have a non-empty name right after `<`.
+    let after_open = &body[open + '<'.len_utf8()..];
+    let has_name = after_open
+        .chars()
+        .next()
+        .map(|ch| !ch.is_whitespace() && ch != '>')
+        .unwrap_or(false);
+
+    if !has_name {
+        return TagBodyEnd::NoOpenTag;
+    }
+
+    for (index, ch) in body.char_indices() {
+        if ch != '>' {
+            continue;
+        }
+
+        if !is_outside_quotes(body, index) {
+            continue;
+        }
+
+        let rest = body[index + ch.len_utf8()..].trim_start();
+
+        if rest.is_empty() || rest.starts_with("---") {
+            return TagBodyEnd::Complete;
+        }
+    }
+
+    TagBodyEnd::Unclosed
+}
+
+/// Consume indentation-led continuation lines while the tag is still open.
+fn finish_tag_body(
+    input: &mut &mut LocatingSlice<&str>,
+    source: &str,
+    first_line_span: Range<usize>,
+    first_tail: &str,
+) -> Result<(String, Range<usize>), ParseDiagnostic> {
+    // parse_line hands us the text after the opening `<`.
+    let mut body = format!("<{first_tail}");
+    let mut span = first_line_span;
+
+    loop {
+        match classify_tag_body(&body) {
+            TagBodyEnd::Complete => return Ok((body, span)),
+            TagBodyEnd::NoOpenTag => {
+                return Err(ParseDiagnostic::new(
+                    source,
+                    span,
+                    "Tag text encountered outside a tag",
+                ))
+            }
+            TagBodyEnd::Unclosed => {
+                if input.is_empty() {
+                    return Err(ParseDiagnostic::new(
+                        source,
+                        span,
+                        "Unterminated tag: reached end of file before `>`",
+                    ));
+                }
+
+                let (line, line_span) = till_line_ending
+                    .with_span()
+                    .parse_next(&mut **input)
+                    .map_err(|error: winnow::error::ContextError| {
+                        let offset = input.current_token_start();
+                        diagnostic_at_current(source, offset, format!("Could not read line: {error:?}"))
+                    })?;
+                let _ = opt::<_, _, winnow::error::ContextError, _>(line_ending)
+                    .parse_next(&mut **input);
+
+                let parsed = parse_line(line).map_err(|message| {
+                    ParseDiagnostic::new(source, line_span.clone(), message)
+                })?;
+
+                match parsed {
+                    // Mid-tag comment lines are dropped from the joined body.
+                    Line::Comment => {
+                        span.end = line_span.end;
+                        continue;
+                    }
+                    Line::Ignore => {}
+                    Line::Section(_) | Line::Tag(_) => {
+                        return Err(ParseDiagnostic::new(
+                            source,
+                            span,
+                            "Unterminated tag: reached a new construct before `>`",
+                        ));
+                    }
+                }
+
+                span.end = line_span.end;
+                let trimmed = line.trim();
+                body.push(' ');
+                body.push_str(trimmed);
+            }
+        }
+    }
 }
 
 // -----------------------------------------------------------------------------
@@ -204,7 +334,7 @@ fn parse_line(line: &str) -> Result<Line<'_>, String> {
     match first {
         '#' => parse_section_tail(chars.as_str()),
         '<' => Ok(Line::Tag(chars.as_str())),
-        '-' => Ok(Line::Ignore),
+        '-' => Ok(Line::Comment),
         _ => Ok(Line::Ignore),
     }
 }
@@ -429,6 +559,8 @@ mod tests {
   <spi id="spi2" sclk="6" mosi="7" /> --- displays generally omit miso
 "#;
 
+    const MULTI_LINE_CONFIG: &str = "# espforge\n  <project name=\"example project\"\n           description = \"example showing espf file format\" />\n  <chip type=\"esp32c3\" />\n\n# peripherals\n  <i2c id=\"i2c0\" sda=\"8\" scl=\"9\"\n      frequency=\"400kHz\" />\n";
+
     #[test]
     fn parses_config() {
         let table = parse_to_leaf_table(CONFIG).unwrap();
@@ -507,6 +639,73 @@ mod tests {
     #[test]
     fn reports_tags_before_sections() {
         let source = "<chip type=\"esp32c3\" />\n";
+        let error = parse_to_leaf_table(source).unwrap_err();
+
+        assert!(error.to_string().contains("before a section"));
+    }
+
+    #[test]
+    fn accepts_tag_spanning_multiple_lines() {
+        let source = concat!(
+            "# espforge\n",
+            "  <project name=\"example project\"\n",
+            "           description=\"example showing espf file format\" />\n",
+        );
+        let table = parse_to_leaf_table(source).unwrap();
+
+        assert_eq!(
+            table.fields.get("espforge.project.name").unwrap(),
+            "example project"
+        );
+        assert_eq!(
+            table.fields.get("espforge.project.description").unwrap(),
+            "example showing espf file format"
+        );
+    }
+
+    #[test]
+    fn accepts_multi_line_tag_in_larger_file() {
+        let table = parse_to_leaf_table(MULTI_LINE_CONFIG).unwrap();
+
+        assert_eq!(
+            table.fields.get("espforge.project.description").unwrap(),
+            "example showing espf file format"
+        );
+        assert_eq!(table.fields.get("espforge.chip.type").unwrap(), "esp32c3");
+        assert_eq!(
+            table.fields.get("peripherals.i2c0.frequency").unwrap(),
+            "400kHz"
+        );
+    }
+
+    #[test]
+    fn accepts_comments_between_lines_of_multi_line_tag() {
+        let source = concat!(
+            "# espforge\n",
+            "  <chip\n",
+            "    --- this is the main chip\n",
+            "    type=\"esp32c3\" />\n",
+        );
+        let table = parse_to_leaf_table(source).unwrap();
+
+        assert_eq!(table.fields.get("espforge.chip.type").unwrap(), "esp32c3");
+    }
+
+    #[test]
+    fn reports_unclosed_multi_line_tag() {
+        let source = concat!(
+            "# espforge\n",
+            "  <chip\n",
+            "    type=\"esp32c3\"  \n",  // no closing /> — should error
+        );
+        let error = parse_to_leaf_table(source).unwrap_err();
+
+        assert!(error.to_string().contains("Unterminated tag"));
+    }
+
+    #[test]
+    fn reports_tag_before_section_in_multi_line_tag() {
+        let source = "  <chip type=\"esp32c3\"\n           />\n";
         let error = parse_to_leaf_table(source).unwrap_err();
 
         assert!(error.to_string().contains("before a section"));
