@@ -11,7 +11,7 @@ pub struct ParseDiagnostic {
 }
 
 impl ParseDiagnostic {
-    pub(crate) fn new(source: &str, span: Range<usize>, message: impl Into<String>) -> Self {
+    pub fn new(source: &str, span: Range<usize>, message: impl Into<String>) -> Self {
         let start = span.start.min(source.len());
         let end = span.end.min(source.len()).max(start);
 

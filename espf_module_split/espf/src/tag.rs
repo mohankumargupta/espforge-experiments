@@ -9,19 +9,63 @@ use winnow::{
 };
 
 use crate::{
+    ast::{Attr, Element},
     diagnostic::{diagnostic_at_current, ParseDiagnostic},
     line::{parse_line, Line},
 };
 
-#[derive(Debug, PartialEq, Eq)]
-pub(crate) struct TagInfo<'a> {
-    pub(crate) name: &'a str,
-    pub(crate) id: Option<&'a str>,
-}
-
 // -----------------------------------------------------------------------------
 // Tag body accumulation
 // -----------------------------------------------------------------------------
+
+/// A run of `TagBody::text` that was copied verbatim from the source.
+#[derive(Debug, Clone, Copy)]
+struct Piece {
+    /// Byte offset of the run in the joined text.
+    joined: usize,
+    /// Byte offset of the same run in the original source.
+    source: usize,
+    len: usize,
+}
+
+/// A complete tag, joined onto one line, plus what is needed to map offsets in
+/// the joined text back to the original source.
+#[derive(Debug)]
+pub(crate) struct TagBody {
+    /// Starts with the opening `<`. Continuation lines are trimmed and joined
+    /// with a single space; mid-tag comment lines are dropped.
+    pub(crate) text: String,
+    /// First line to last line of the tag in the source.
+    pub(crate) span: Range<usize>,
+    pieces: Vec<Piece>,
+}
+
+impl TagBody {
+    /// Map a byte range of `text` back to the original source.
+    pub(crate) fn source_range(&self, range: Range<usize>) -> Range<usize> {
+        let start = self.source_offset(range.start);
+
+        let end = if range.end > range.start {
+            self.source_offset(range.end - 1) + 1
+        } else {
+            start
+        };
+
+        start..end
+    }
+
+    fn source_offset(&self, offset: usize) -> usize {
+        let piece = self
+            .pieces
+            .iter()
+            .rev()
+            .find(|piece| piece.joined <= offset)
+            .expect("the first piece starts at offset 0");
+
+        // The clamp only matters for an offset on a joining space.
+        piece.source + (offset - piece.joined).min(piece.len)
+    }
+}
 
 /// Why we stopped scanning: the tag is complete, or something is wrong.
 enum TagBodyEnd {
@@ -85,14 +129,21 @@ pub(crate) fn finish_tag_body(
     source: &str,
     first_line_span: Range<usize>,
     first_tail: &str,
-) -> Result<(String, Range<usize>), ParseDiagnostic> {
-    // parse_line hands us the text after the opening `<`.
+) -> Result<TagBody, ParseDiagnostic> {
+    // parse_line hands us the text after the opening `<`, which is a suffix of
+    // the first line, so the `<` sits one byte before it in the source.
+    let open_offset = first_line_span.end - first_tail.len() - 1;
     let mut body = format!("<{first_tail}");
+    let mut pieces = vec![Piece {
+        joined: 0,
+        source: open_offset,
+        len: body.len(),
+    }];
     let mut span = first_line_span;
 
     loop {
         match classify_tag_body(&body) {
-            TagBodyEnd::Complete => return Ok((body, span)),
+            TagBodyEnd::Complete => return Ok(TagBody { text: body, span, pieces }),
             TagBodyEnd::NoOpenTag => {
                 return Err(ParseDiagnostic::new(
                     source,
@@ -141,7 +192,14 @@ pub(crate) fn finish_tag_body(
 
                 span.end = line_span.end;
                 let trimmed = line.trim();
+                let leading = line.len() - line.trim_start().len();
+
                 body.push(' ');
+                pieces.push(Piece {
+                    joined: body.len(),
+                    source: line_span.start + leading,
+                    len: trimmed.len(),
+                });
                 body.push_str(trimmed);
             }
         }
@@ -149,36 +207,74 @@ pub(crate) fn finish_tag_body(
 }
 
 // -----------------------------------------------------------------------------
-// Tag and attribute parsing
+// Element and attribute parsing
 // -----------------------------------------------------------------------------
 
-pub(crate) fn parse_tag<'a>(input: &mut &'a str) -> Result<TagInfo<'a>, String> {
-    let name = parse_tag_name(input).map_err(|error| format!("Expected a tag name: {error:?}"))?;
+/// Parse a complete tag body into an `Element`, with spans in source offsets.
+pub(crate) fn parse_element(body: &TagBody) -> Result<Element, String> {
+    let text = body.text.as_str();
 
-    let mut id = None;
+    // `finish_tag_body` always starts the text with the opening `<`.
+    let mut input = text.strip_prefix('<').unwrap_or(text);
+
+    let tag = parse_tag_name(&mut input)
+        .map_err(|error| format!("Malformed tag: Expected a tag name: {error:?}"))?;
+
+    let mut id: Option<Attr> = None;
+    let mut attrs = Vec::new();
 
     loop {
-        skip_tag_whitespace(input);
+        skip_tag_whitespace(&mut input);
 
         if opt::<_, _, winnow::error::ContextError, _>("/>")
-            .parse_next(input)
-            .map_err(|error| format!("Invalid tag ending: {error:?}"))?
+            .parse_next(&mut input)
+            .map_err(|error| format!("Malformed tag: Invalid tag ending: {error:?}"))?
             .is_some()
         {
-            return Ok(TagInfo { name, id });
+            break;
         }
 
-        let (key, value) =
-            parse_attribute(input).map_err(|error| format!("Invalid attribute: {error:?}"))?;
+        let (key, value) = parse_attribute(&mut input)
+            .map_err(|error| format!("Malformed tag: Invalid attribute: {error:?}"))?;
 
-        if key == "id" {
+        let attr = Attr {
+            key: key.to_owned(),
+            value: value.to_owned(),
+            key_span: body.source_range(span_of(text, key)),
+            value_span: body.source_range(span_of(text, value)),
+        };
+
+        if attr.key == "id" {
             if id.is_some() {
-                return Err("Duplicate `id` attribute".to_owned());
+                return Err("Malformed tag: Duplicate `id` attribute".to_owned());
             }
 
-            id = Some(value);
+            id = Some(attr);
+        } else {
+            attrs.push(attr);
         }
     }
+
+    skip_tag_whitespace(&mut input);
+
+    // Allow trailing comments like `--- why this pin choice`.
+    if !input.is_empty() && !input.starts_with("---") {
+        return Err(format!("Unexpected text after <{tag}>: {input:?}"));
+    }
+
+    Ok(Element {
+        tag: tag.to_owned(),
+        id,
+        attrs,
+        span: body.span.clone(),
+    })
+}
+
+/// Byte range of `part` inside `whole`. `part` must be a subslice of `whole`,
+/// which is what the winnow parsers above return.
+fn span_of(whole: &str, part: &str) -> Range<usize> {
+    let start = part.as_ptr() as usize - whole.as_ptr() as usize;
+    start..start + part.len()
 }
 
 fn is_tag_name_char(ch: char) -> bool {
@@ -193,7 +289,7 @@ fn parse_tag_name<'a>(input: &mut &'a str) -> ModalResult<&'a str> {
     take_while(1.., is_tag_name_char).parse_next(input)
 }
 
-pub(crate) fn parse_attribute<'a>(input: &mut &'a str) -> ModalResult<(&'a str, &'a str)> {
+fn parse_attribute<'a>(input: &mut &'a str) -> ModalResult<(&'a str, &'a str)> {
     let key = take_while(1.., is_attribute_key_char).parse_next(input)?;
 
     space0.parse_next(input)?;
@@ -209,6 +305,6 @@ fn parse_quoted_value<'a>(input: &mut &'a str) -> ModalResult<&'a str> {
     delimited('"', take_till(0.., '"'), '"').parse_next(input)
 }
 
-pub(crate) fn skip_tag_whitespace(input: &mut &str) {
+fn skip_tag_whitespace(input: &mut &str) {
     let _: Result<(&str, &str), ()> = (space0, space0).parse_next(input); // always succeeds
 }

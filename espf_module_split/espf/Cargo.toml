@@ -5,5 +5,5 @@ edition = "2024"
 
 [dependencies]
 # Use the same versions your current prototype already builds with.
-winnow = "0.7"
-annotate-snippets = "0.12"
+winnow = { workspace = true }
+annotate-snippets = { workspace = true }
