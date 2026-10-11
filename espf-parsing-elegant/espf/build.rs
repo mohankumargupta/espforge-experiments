@@ -30,7 +30,7 @@ fn main() {
         pub mod drivers {{\n\
             {}\n\
         }}\n\n\
-        pub fn route_driver(tag_name: &str, device: &crate::context::ResolvedDevice, ctx: &crate::context::RuntimeContext) -> Result<(), String> {{\n\
+        pub fn route_driver(tag_name: &str, _device: &crate::context::ResolvedDevice, _ctx: &crate::context::RuntimeContext) -> Result<(), String> {{\n\
             match tag_name {{\n\
         {}\n\
                 _ => Err(format!(\"❌ No compile-time driver engine found for runtime tag <{{}}>\", tag_name)),\n\
