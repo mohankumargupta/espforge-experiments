@@ -4,7 +4,7 @@ members = ["espf"]
 
 [workspace.dependencies]
 # Use the same versions your current prototype already builds with.
-winnow = "0.7"
+winnow = { version = "0.7", features = ["simd"] }
 annotate-snippets = "0.12"
 
 

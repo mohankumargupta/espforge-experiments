@@ -2,7 +2,7 @@ use crate::context::{ParsedNode, TagAttribute};
 use std::collections::HashMap;
 use winnow::{
     ascii::{multispace0, multispace1, till_line_ending},
-    combinator::{alt, delimited, dispatch, fail, opt, peek, preceded, repeat, separated_pair},
+    combinator::{delimited, dispatch, fail, opt, peek, preceded, separated_pair},
     token::{any, take_until, take_while},
     ModalResult, Parser,
 };
@@ -15,21 +15,25 @@ fn identifier<'a>(input: &mut &'a str) -> ModalResult<&'a str> {
 
 /// Skip blank lines and comments starting with `--`.
 ///
-/// Every branch consumes at least one byte on success, so this cannot loop
-/// forever inside `repeat(0.., ...)`.
+/// Uses `opt(dispatch!{...})` so "not trivia" cleanly stops the loop
+/// without producing an error, and so the error type is pinned by
+/// `ModalResult`.
 fn skip_trivia(input: &mut &str) -> ModalResult<()> {
-    repeat(
-        0..,
-        dispatch! {peek(any);
-            // `--` comment line: consume through end of line
+    loop {
+        let before = *input;
+
+        let _ = opt(dispatch! {peek(any);
             '-' => preceded(('-', '-'), till_line_ending).void(),
-            // one-or-more whitespace chars
             ' ' | '\t' | '\r' | '\n' => multispace1.void(),
-            // anything else: stop skipping, do not consume
             _ => fail,
-        },
-    )
-    .parse_next(input)
+        })
+        .parse_next(input)?;
+
+        if *input == before {
+            break;
+        }
+    }
+    Ok(())
 }
 
 /// Section header: `# name`
@@ -55,7 +59,7 @@ fn parse_node<'a>(input: &mut &'a str) -> ModalResult<ParsedNode<'a>> {
         (multispace0, '<'),
         (
             identifier,
-            repeat(0.., preceded(multispace1, attribute)),
+            winnow::combinator::repeat(0.., preceded(multispace1, attribute)),
             preceded(multispace0, "/>"),
         ),
     )
@@ -70,17 +74,27 @@ fn parse_node<'a>(input: &mut &'a str) -> ModalResult<ParsedNode<'a>> {
     .parse_next(input)
 }
 
+/// Consume exactly one line terminator (`\r\n`, `\n`, or `\r`) if present.
+/// Returns `Ok(true)` if anything was consumed.
+///
+/// Order matters: check `\r\n` before `\n` and `\r`.
+fn consume_newline(input: &mut &str) -> ModalResult<bool> {
+    for nl in ["\r\n", "\n", "\r"] {
+        if let Some(rest) = input.strip_prefix(nl) {
+            *input = rest;
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
 /// Parse the contents of a single section, up to (but not consuming) the next
 /// section header or EOF.
-///
-/// Uses an explicit loop rather than `repeat(0.., ...)` so we can guarantee
-/// that every successful iteration consumes at least one byte — otherwise
-/// Winnow's `repeat` asserts "parsers must always consume".
 fn section_content<'a>(input: &mut &'a str) -> ModalResult<Vec<ParsedNode<'a>>> {
     let mut nodes = Vec::new();
 
     loop {
-        // 1. Skip whitespace / comments so we're at a meaningful token.
+        // 1. Skip whitespace / comments.
         skip_trivia.parse_next(input)?;
 
         // 2. Stop at EOF.
@@ -88,7 +102,7 @@ fn section_content<'a>(input: &mut &'a str) -> ModalResult<Vec<ParsedNode<'a>>> 
             break;
         }
 
-        // 3. Stop if the next thing is a section header (peek without consuming).
+        // 3. Stop if the next thing is a section header (peek, don't consume).
         if peek(('#', multispace0, identifier))
             .parse_next(input)
             .is_ok()
@@ -102,10 +116,9 @@ fn section_content<'a>(input: &mut &'a str) -> ModalResult<Vec<ParsedNode<'a>>> 
             continue;
         }
 
-        // 5. Otherwise consume exactly one line as junk (including newline).
-        //    Guarantees progress even if the line is blank.
+        // 5. Junk line: consume one full line including its terminator.
         let _ = till_line_ending.parse_next(input)?;
-        let _ = opt(alt(("\r\n", "\n", "\r"))).parse_next(input)?;
+        let _ = consume_newline(input)?;
     }
 
     Ok(nodes)
@@ -115,20 +128,17 @@ fn section_content<'a>(input: &mut &'a str) -> ModalResult<Vec<ParsedNode<'a>>> 
 pub fn parse_espf_runtime<'a>(
     mut input: &'a str,
 ) -> ModalResult<HashMap<String, Vec<ParsedNode<'a>>>> {
-    // 1. Skip any leading trivia.
+    // 1. Skip leading trivia.
     skip_trivia.parse_next(&mut input)?;
 
-    // 2. Parse a sequence of (header, contents) pairs.
     let mut sections: HashMap<String, Vec<ParsedNode<'a>>> = HashMap::new();
 
     while !input.is_empty() {
-        // Skip whitespace between sections.
         skip_trivia.parse_next(&mut input)?;
         if input.is_empty() {
             break;
         }
 
-        // Section header.
         let section_name = match section_header.parse_next(&mut input) {
             Ok(n) => n,
             Err(e) => {
@@ -140,10 +150,8 @@ pub fn parse_espf_runtime<'a>(
             }
         };
 
-        // Skip trivia between header and its contents.
         skip_trivia.parse_next(&mut input)?;
 
-        // Parse contents until the next header or EOF.
         let nodes = match section_content.parse_next(&mut input) {
             Ok(n) => n,
             Err(e) => {
