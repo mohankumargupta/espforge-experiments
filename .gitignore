@@ -2,3 +2,4 @@ target
 debug
 **/*.rs.bk
 
+/espf-parsing-elegant/espf/src/generated_registry.rs
