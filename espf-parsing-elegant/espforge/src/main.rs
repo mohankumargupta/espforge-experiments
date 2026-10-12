@@ -1,4 +1,5 @@
 use clap::{Parser, Subcommand};
+use esforge_bindings::drivers::generated_registry::route_driver;
 use espf::context::RuntimeContext;
 use std::path::PathBuf;
 
@@ -49,7 +50,7 @@ fn main() {
             println!("--- Phase 3: Executing Safe Array Drivers Dispatch Sweeps ---\n");
             for resolved_device in &runtime_ctx.resolved_devices {
                 // Route driver matches string names using code generated instantly by build.rs
-                espf::generated_registry::route_driver(resolved_device.tag_name, resolved_device, &runtime_ctx)
+                route_driver(resolved_device.tag_name, resolved_device, &runtime_ctx)
                     .unwrap();
             }
 

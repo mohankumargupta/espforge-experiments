@@ -5,6 +5,7 @@ edition = "2024"
 
 [dependencies]
 espf = { path = "../espf" }
+esforge-bindings = { path = "../esforge-bindings" }
 clap = { version = "4", features = ["derive"] }
 # Use the same versions your current prototype already builds with.
 winnow = { workspace = true }

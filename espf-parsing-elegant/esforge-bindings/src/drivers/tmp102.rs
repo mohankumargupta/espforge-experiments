@@ -1,4 +1,4 @@
-use crate::context::{RuntimeContext, ResolvedDevice};
+use espf::context::{RuntimeContext, ResolvedDevice};
 
 pub fn init(device: &ResolvedDevice, ctx: &RuntimeContext) -> Result<(), String> {
     // Direct integer-offset array lookup. No string searching!
