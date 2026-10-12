@@ -1,0 +1,11 @@
+[package]
+name = "espforge"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+espf = { path = "../espf" }
+clap = { version = "4", features = ["derive"] }
+# Use the same versions your current prototype already builds with.
+winnow = { workspace = true }
+annotate-snippets = { workspace = true }

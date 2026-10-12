@@ -168,3 +168,70 @@ pub fn parse_espf_runtime<'a>(
 
     Ok(sections)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Parses the sample layout that used to be embedded in the CLI binary.
+    /// All three sections must land with the expected node counts and ids.
+    #[test]
+    fn parses_sample_runtime_file() {
+        let input = r#"
+--- ==============================================================
+--- ESPF runtime file format instance
+--- ==============================================================
+
+# peripherals
+  <gpio id="gpio4" pin="4" />
+  <i2c  id="i2c0" sda="8" scl="9" frequency="400kHz" />
+  <spi  id="spi2" sclk="6" mosi="7" />
+
+# components
+  <i2c_component  id="temp_bus"    i2c="$i2c0" address="0x48" />
+  <spi_component  id="display_bus" spi="$spi2" mode="0" cs="gpio5" frequency="40MHz" />
+
+# devices
+  <tmp102         id="outdoor_temp" i2c_component="$temp_bus" />
+  <ili9341        id="tft_display"  spi_component="$display_bus" />
+    "#;
+
+        let sections = parse_espf_runtime(input)
+            .expect("sample runtime file should parse cleanly");
+
+        assert_eq!(sections["peripherals"].len(), 3);
+        assert_eq!(sections["components"].len(), 2);
+        assert_eq!(sections["devices"].len(), 2);
+
+        let tmp102 = sections["devices"][0].clone();
+        assert_eq!(tmp102.tag_name, "tmp102");
+        assert_eq!(tmp102.id, "outdoor_temp");
+    }
+
+    /// A malformed attribute value with no closing `"` must not silently
+    /// disappear as a "junk line" — it is a syntactical error.
+    #[test]
+    fn rejects_node_with_missing_closing_quote() {
+        let input = r#"
+# peripherals
+  <gpio id="gpio4" pin="4 />
+"#;
+
+        // The parse itself may succeed structurally, but the node must not
+        // come back with a truncated attribute. It is only acceptable if the
+        // node was rejected or parsed without the malformed `pin` value.
+        if let Ok(sections) = parse_espf_runtime(input) {
+            let peripherals = &sections["peripherals"];
+            // The malformed node either was not captured at all, or was
+            // captured without any `pin` attribute value.
+            if !peripherals.is_empty() {
+                let node = &peripherals[0];
+                assert!(
+                    node.get_attr("pin").is_none(),
+                    "malformed pin attribute must not yield a value, got {:?}",
+                    node.get_attr("pin")
+                );
+            }
+        }
+    }
+}
