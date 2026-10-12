@@ -1,8 +1,10 @@
 use crate::context::{ParsedNode, TagAttribute};
+use crate::diag::JunkSpan;
 use std::collections::HashMap;
 use winnow::{
     ascii::{multispace0, multispace1, till_line_ending},
     combinator::{delimited, dispatch, fail, opt, peek, preceded, separated_pair},
+    stream::Stream,
     token::{any, take_until, take_while},
     ModalResult, Parser,
 };
@@ -34,6 +36,12 @@ fn skip_trivia(input: &mut &str) -> ModalResult<()> {
         }
     }
     Ok(())
+}
+
+/// The amount of input `parser` consumed, relative to the start of the file.
+/// Runs the parser on a throwaway reborrow of `input` purely for measurement.
+fn consumed_since(input: &str, original_start: &str) -> usize {
+    original_start.len() - input.len()
 }
 
 /// Section header: `# name`
@@ -90,7 +98,15 @@ fn consume_newline(input: &mut &str) -> ModalResult<bool> {
 
 /// Parse the contents of a single section, up to (but not consuming) the next
 /// section header or EOF.
-fn section_content<'a>(input: &mut &'a str) -> ModalResult<Vec<ParsedNode<'a>>> {
+///
+/// `junk_spans` collects byte offsets and line numbers of lines that did not
+/// look like `<tag attr="v" />` and were skipped as junk. Callers that care
+/// about nice error messages can render them with `annotate-snippets`.
+fn section_content<'a>(
+    input: &mut &'a str,
+    file: &'a str,
+    junk_spans: &mut Vec<JunkSpan>,
+) -> ModalResult<Vec<ParsedNode<'a>>> {
     let mut nodes = Vec::new();
 
     loop {
@@ -111,12 +127,24 @@ fn section_content<'a>(input: &mut &'a str) -> ModalResult<Vec<ParsedNode<'a>>> 
         }
 
         // 4. Try to parse a self-closing tag.
+        //
+        // On failure winnow may have partially consumed `input`, so reset to
+        // the checkpoint first: the junk offset must point at the *start* of
+        // the offending line.
+        let checkpoint = input.checkpoint();
         if let Ok(node) = parse_node.parse_next(input) {
             nodes.push(node);
             continue;
         }
+        input.reset(&checkpoint);
 
-        // 5. Junk line: consume one full line including its terminator.
+        // 5. Junk line: record where it starts, then consume one full line.
+        let junk_offset = consumed_since(input, file);
+        junk_spans.push(JunkSpan {
+            offset: junk_offset,
+            line: crate::diag::line_number_for_offset(file, junk_offset),
+        });
+
         let _ = till_line_ending.parse_next(input)?;
         let _ = consume_newline(input)?;
     }
@@ -124,49 +152,77 @@ fn section_content<'a>(input: &mut &'a str) -> ModalResult<Vec<ParsedNode<'a>>> 
     Ok(nodes)
 }
 
-/// Main parser entry point.
-pub fn parse_espf_runtime<'a>(
+/// Parse a whole ESPF file, recording junk (malformed) lines as offsets.
+fn parse_impl<'a>(
     mut input: &'a str,
-) -> ModalResult<HashMap<String, Vec<ParsedNode<'a>>>> {
-    // 1. Skip leading trivia.
-    skip_trivia.parse_next(&mut input)?;
+    file: &'a str,
+    junk_spans: &mut Vec<JunkSpan>,
+) -> HashMap<String, Vec<ParsedNode<'a>>> {
+    skip_trivia.parse_next(&mut input).ok();
 
     let mut sections: HashMap<String, Vec<ParsedNode<'a>>> = HashMap::new();
 
     while !input.is_empty() {
-        skip_trivia.parse_next(&mut input)?;
+        skip_trivia.parse_next(&mut input).ok();
         if input.is_empty() {
             break;
         }
 
+        // Byte offset of the start of this section header in `file`.
+        let header_offset = consumed_since(input, file);
+
         let section_name = match section_header.parse_next(&mut input) {
             Ok(n) => n,
-            Err(e) => {
-                eprintln!(
-                    "[parser] section_header failed at: {:?}",
-                    &input[..input.len().min(200)]
-                );
-                return Err(e);
+            Err(_) => {
+                // Malformed section header: record and skip the whole line so
+                // we can keep going and report *all* problems, not just the
+                // first one.
+                junk_spans.push(JunkSpan {
+                    offset: header_offset,
+                    line: crate::diag::line_number_for_offset(file, header_offset),
+                });
+                let _: ModalResult<&str> = till_line_ending.parse_next(&mut input);
+                let _ = consume_newline(&mut input);
+                continue;
             }
         };
 
-        skip_trivia.parse_next(&mut input)?;
+        skip_trivia.parse_next(&mut input).ok();
 
-        let nodes = match section_content.parse_next(&mut input) {
-            Ok(n) => n,
-            Err(e) => {
-                eprintln!(
-                    "[parser] section_content failed at: {:?}",
-                    &input[..input.len().min(200)]
-                );
-                return Err(e);
+        match section_content(&mut input, file, junk_spans) {
+            Ok(nodes) => {
+                sections.insert(section_name.to_string(), nodes);
             }
-        };
-
-        sections.insert(section_name.to_string(), nodes);
+            Err(_) => {
+                // section_content basically never errors (junk lines are
+                // always consumed), but if it does, skip to the next line.
+                let _: ModalResult<&str> = till_line_ending.parse_next(&mut input);
+                let _ = consume_newline(&mut input);
+            }
+        }
     }
 
-    Ok(sections)
+    sections
+}
+
+/// Main parser entry point.
+///
+/// Malformed lines are silently skipped (recorded in `junk_spans` if provided)
+/// so the caller decides whether to render an error or proceed.
+pub fn parse_espf_runtime_with_diagnostics<'a>(
+    input: &'a str,
+) -> (HashMap<String, Vec<ParsedNode<'a>>>, Vec<JunkSpan>) {
+    let mut junk_spans = Vec::new();
+    let sections = parse_impl(input, input, &mut junk_spans);
+    (sections, junk_spans)
+}
+
+/// Backwards-compatible entry point: keeps the original strict-ish behavior of
+/// returning a `ModalResult` and printing nothing, skipping junk lines.
+pub fn parse_espf_runtime<'a>(
+    input: &'a str,
+) -> HashMap<String, Vec<ParsedNode<'a>>> {
+    parse_espf_runtime_with_diagnostics(input).0
 }
 
 #[cfg(test)]
@@ -196,8 +252,7 @@ mod tests {
   <ili9341        id="tft_display"  spi_component="$display_bus" />
     "#;
 
-        let sections = parse_espf_runtime(input)
-            .expect("sample runtime file should parse cleanly");
+        let sections = parse_espf_runtime(input);
 
         assert_eq!(sections["peripherals"].len(), 3);
         assert_eq!(sections["components"].len(), 2);
@@ -208,30 +263,37 @@ mod tests {
         assert_eq!(tmp102.id, "outdoor_temp");
     }
 
-    /// A malformed attribute value with no closing `"` must not silently
-    /// disappear as a "junk line" — it is a syntactical error.
+    /// A malformed attribute value with no closing `"` must be reported as a
+    /// junk line at a precise offset, not silently swallowed.
     #[test]
     fn rejects_node_with_missing_closing_quote() {
-        let input = r#"
-# peripherals
-  <gpio id="gpio4" pin="4 />
-"#;
+        let input = "# peripherals\n  <gpio id=\"gpio4\" pin=\"4 />\n";
 
-        // The parse itself may succeed structurally, but the node must not
-        // come back with a truncated attribute. It is only acceptable if the
-        // node was rejected or parsed without the malformed `pin` value.
-        if let Ok(sections) = parse_espf_runtime(input) {
-            let peripherals = &sections["peripherals"];
-            // The malformed node either was not captured at all, or was
-            // captured without any `pin` attribute value.
-            if !peripherals.is_empty() {
-                let node = &peripherals[0];
-                assert!(
-                    node.get_attr("pin").is_none(),
-                    "malformed pin attribute must not yield a value, got {:?}",
-                    node.get_attr("pin")
-                );
-            }
+        let (sections, junk) = parse_espf_runtime_with_diagnostics(input);
+
+        // The malformed node must not come back with a truncated attribute.
+        let peripherals = &sections["peripherals"];
+        if !peripherals.is_empty() {
+            let node = &peripherals[0];
+            assert!(
+                node.get_attr("pin").is_none(),
+                "malformed pin attribute must not yield a value, got {:?}",
+                node.get_attr("pin")
+            );
         }
+
+        // ...and the junk offset must point right at the node.
+        assert_eq!(junk.len(), 1, "expected exactly one junk line");
+        assert_eq!(junk[0].line, 2);
+        assert_eq!(&input[junk[0].offset..junk[0].offset + 5], "<gpio");
+    }
+
+    /// A junk line inside a section is reported at the correct file offset.
+    #[test]
+    fn junk_offset_points_at_offending_line() {
+        let input = "# peripherals\n<gpio id=\"a\"/ />\n";
+        let (_sections, junk) = parse_espf_runtime_with_diagnostics(input);
+        assert_eq!(junk.len(), 1);
+        assert_eq!(junk[0].offset, "# peripherals\n".len());
     }
 }

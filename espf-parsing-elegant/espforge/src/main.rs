@@ -1,6 +1,7 @@
 use clap::{Parser, Subcommand};
 use esforge_bindings::drivers::generated_registry::route_driver;
 use espf::context::RuntimeContext;
+use espf::diag::{render_espf_report, EspfSnippetError, JunkSpan};
 use std::path::PathBuf;
 
 #[derive(Parser)]
@@ -19,6 +20,24 @@ enum Commands {
     },
 }
 
+fn render_syntax_diagnostics(file_path: &str, espf_source: &str, junk: &[JunkSpan]) -> bool {
+    if junk.is_empty() {
+        return false;
+    }
+
+    let primary = EspfSnippetError::UnterminatedNode {
+        span: junk[0].offset..junk[0].offset,
+    };
+    let report = render_espf_report(file_path, espf_source, junk, &primary);
+    eprintln!("{report}");
+    eprintln!(
+        "❌ Found {} malformed line(s) in '{}'; run with a corrected file.",
+        junk.len(),
+        file_path
+    );
+    true
+}
+
 fn main() {
     let cli = Cli::parse();
 
@@ -33,8 +52,15 @@ fn main() {
             };
 
             println!("--- Phase 1: Launching Winnow Zero-Copy String Tokenizer ---");
-            let mut parsed_sections = espf::parser::parse_espf_runtime(&espf_runtime_file)
-                .expect("Fatal Error: Syntactical parsing error inside configuration file structure.");
+            let file_str = file.to_string_lossy();
+            let (parsed_sections_opt, junk_spans) =
+                espf::parser::parse_espf_runtime_with_diagnostics(&espf_runtime_file);
+
+            if render_syntax_diagnostics(&file_str, &espf_runtime_file, &junk_spans) {
+                std::process::exit(1);
+            }
+
+            let mut parsed_sections = parsed_sections_opt;
 
             // Harvest empty fallbacks if specific sections are missing from target load file
             let empty = vec![];
