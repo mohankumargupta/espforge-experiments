@@ -3,3 +3,4 @@ debug
 **/*.rs.bk
 
 /espf-parsing-elegant/espf/src/generated_registry.rs
+/espf-parsing-elegant/esforge-bindings/src/drivers/generated_registry.rs
