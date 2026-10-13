@@ -5,7 +5,7 @@ use winnow::{
     ascii::{multispace0, multispace1, till_line_ending},
     combinator::{delimited, dispatch, fail, opt, peek, preceded, separated_pair},
     stream::Stream,
-    token::{any, take_until, take_while},
+    token::{any, take_while},
     ModalResult, Parser,
 };
 
@@ -15,7 +15,35 @@ fn identifier<'a>(input: &mut &'a str) -> ModalResult<&'a str> {
         .parse_next(input)
 }
 
-/// Skip blank lines and comments starting with `--`.
+/// One comment block: an opening line starting with one or more `=`, one or
+/// more comment lines, and a closing line made only of `=`. The first line is
+/// already positioned at the opening `=` (skipped dispatch matched it), so
+/// consuming until the line ending swallows `===...  title text` too.
+fn block_comment(input: &mut &str) -> ModalResult<()> {
+    // Opening line: `=` sigils plus any title text, then its newline.
+    till_line_ending.void().parse_next(input)?;
+    consume_newline(input)?;
+
+    // Body lines. A line whose trimmed content is only `=` closes the block;
+    // anything else is a comment line, including blank lines.
+    while !input.is_empty() {
+        let line_end = input.find(['\r', '\n']).map_or(input.len(), |i| i);
+        let is_closing = !input[..line_end].trim_end().is_empty()
+            && input[..line_end].trim_end().chars().all(|c| c == '=');
+
+        *input = &input[line_end..];
+        consume_newline(input)?;
+
+        if is_closing {
+            break;
+        }
+    }
+    // An unterminated block (EOF before the closing `=` line) is tolerated.
+
+    Ok(())
+}
+
+/// Skip blank lines and `=`-delimited comment blocks.
 ///
 /// Uses `opt(dispatch!{...})` so "not trivia" cleanly stops the loop
 /// without producing an error, and so the error type is pinned by
@@ -25,7 +53,7 @@ fn skip_trivia(input: &mut &str) -> ModalResult<()> {
         let before = *input;
 
         let _ = opt(dispatch! {peek(any);
-            '-' => preceded(('-', '-'), till_line_ending).void(),
+            '=' => block_comment,
             ' ' | '\t' | '\r' | '\n' => multispace1.void(),
             _ => fail,
         })
@@ -49,9 +77,11 @@ fn section_header<'a>(input: &mut &'a str) -> ModalResult<&'a str> {
     preceded(('#', multispace0), identifier).parse_next(input)
 }
 
-/// Everything up to the closing `"`.
+/// Everything up to the closing `"`. Values may not span lines: a newline is
+/// not an acceptable terminator, so an unterminated quote fails the attribute
+/// (and thus the line) instead of reaching the next line's `"`.
 fn unquoted_value<'a>(input: &mut &'a str) -> ModalResult<&'a str> {
-    take_until(1.., "\"").parse_next(input)
+    take_while(0.., |c: char| c != '"' && c != '\n' && c != '\r').parse_next(input)
 }
 
 /// `key="value"`
@@ -133,8 +163,19 @@ fn section_content<'a>(
         // the offending line.
         let checkpoint = input.checkpoint();
         if let Ok(node) = parse_node.parse_next(input) {
-            nodes.push(node);
-            continue;
+            // A leaf node must stand on its own line: after `/>` only blanks
+            // may remain before the newline/EOF (no trailing comments).
+            let first_non_blank = input
+                .find(|c: char| c != ' ' && c != '\t')
+                .unwrap_or(input.len());
+            let tail = &input[first_non_blank..];
+            let is_whole_line = tail.is_empty()
+                || tail.starts_with('\r')
+                || tail.starts_with('\n');
+            if is_whole_line {
+                nodes.push(node);
+                continue;
+            }
         }
         input.reset(&checkpoint);
 
@@ -234,9 +275,9 @@ mod tests {
     #[test]
     fn parses_sample_runtime_file() {
         let input = r#"
---- ==============================================================
---- ESPF runtime file format instance
---- ==============================================================
+==============
+= ESPF runtime file format instance
+==============
 
 # peripherals
   <gpio id="gpio4" pin="4" />
@@ -261,6 +302,77 @@ mod tests {
         let tmp102 = sections["devices"][0].clone();
         assert_eq!(tmp102.tag_name, "tmp102");
         assert_eq!(tmp102.id, "outdoor_temp");
+    }
+
+    /// A comment block may span multiple lines before and inside sections,
+    /// and its body must not leak into sections as junk or nodes.
+    #[test]
+    fn block_comments_are_consumed_and_not_junk() {
+        let input = concat!(
+            "=\n",
+            "title text survives on the opening line\n",
+            "this body line and the blank one below are swallowed too\n",
+            "\n",
+            "==\n",
+            "# peripherals\n",
+            "  <gpio id=\"gpio4\" pin=\"4\" />\n",
+            "=== trailing note\n",
+            "closing line comes late\n",
+            "=\n",
+        );
+
+        let (sections, junk) = parse_espf_runtime_with_diagnostics(input);
+
+        assert!(junk.is_empty(), "comment lines must not be junk: {junk:?}");
+        assert_eq!(sections["peripherals"].len(), 1);
+    }
+
+    /// A double-quoted value may not span lines: an unterminated quote must
+    /// make the whole node line junk instead of reaching the next line's `"`.
+    #[test]
+    fn quoted_values_cannot_be_multiline() {
+        let input = "# peripherals\n  <gpio id=\"gpio4\" pin=\"4 />\n  <spi id=\"spi2\" sclk=\"6\" mosi=\"7\" />\n";
+
+        let (sections, junk) = parse_espf_runtime_with_diagnostics(input);
+
+        let peripherals = &sections["peripherals"];
+        assert_eq!(peripherals.len(), 1, "only the well-formed spi node parses");
+        assert_eq!(peripherals[0].tag_name, "spi");
+
+        assert_eq!(junk.len(), 1, "expected exactly one junk line");
+        assert_eq!(junk[0].line, 2);
+        assert_eq!(&input[junk[0].offset..junk[0].offset + 5], "<gpio");
+    }
+
+    /// Inline trailing comments after a leaf node are no longer grammar: the
+    /// whole line is reported as junk.
+    #[test]
+    fn no_comment_after_leaf_node() {
+        let input = "# peripherals\n  <spi id=\"spi2\" sclk=\"6\" mosi=\"7\" /> --- note\n";
+
+        let (sections, junk) = parse_espf_runtime_with_diagnostics(input);
+
+        assert!(sections["peripherals"].is_empty());
+        assert_eq!(junk.len(), 1);
+        assert_eq!(junk[0].line, 2);
+    }
+
+    /// Inline trailing comments after a section heading are no longer
+    /// grammar: the trailing text is reported as junk, but the heading and
+    /// the rest of the section still parse.
+    #[test]
+    fn no_comment_after_section_heading() {
+        let input =
+            "# peripherals --- note\n  <spi id=\"spi2\" sclk=\"6\" mosi=\"7\" />\n";
+
+        let (sections, junk) = parse_espf_runtime_with_diagnostics(input);
+
+        assert_eq!(junk.len(), 1);
+        assert_eq!(junk[0].line, 1);
+        // The heading itself parsed, so the section is entered and its
+        // well-formed nodes load.
+        assert_eq!(sections["peripherals"].len(), 1);
+        assert_eq!(sections["peripherals"][0].tag_name, "spi");
     }
 
     /// A malformed attribute value with no closing `"` must be reported as a
