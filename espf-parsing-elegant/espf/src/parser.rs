@@ -164,7 +164,9 @@ fn section_content<'a>(
         let checkpoint = input.checkpoint();
         if let Ok(node) = parse_node.parse_next(input) {
             // A leaf node must stand on its own line: after `/>` only blanks
-            // may remain before the newline/EOF (no trailing comments).
+            // may remain before the newline/EOF, except for a trailing
+            // inline `//` comment, which is allowed directly after the
+            // self-closing element (and nowhere else).
             let first_non_blank = input
                 .find(|c: char| c != ' ' && c != '\t')
                 .unwrap_or(input.len());
@@ -173,6 +175,12 @@ fn section_content<'a>(
                 || tail.starts_with('\r')
                 || tail.starts_with('\n');
             if is_whole_line {
+                nodes.push(node);
+                continue;
+            }
+            if tail.starts_with("//") {
+                let _ = till_line_ending.parse_next(input)?;
+                let _ = consume_newline(input)?;
                 nodes.push(node);
                 continue;
             }
@@ -344,10 +352,10 @@ mod tests {
         assert_eq!(&input[junk[0].offset..junk[0].offset + 5], "<gpio");
     }
 
-    /// Inline trailing comments after a leaf node are no longer grammar: the
-    /// whole line is reported as junk.
+    /// Trailing text after a leaf node that is not an inline `//` comment
+    /// is junk: the whole line is reported.
     #[test]
-    fn no_comment_after_leaf_node() {
+    fn non_comment_text_after_leaf_node_is_junk() {
         let input = "# peripherals\n  <spi id=\"spi2\" sclk=\"6\" mosi=\"7\" /> --- note\n";
 
         let (sections, junk) = parse_espf_runtime_with_diagnostics(input);
@@ -355,6 +363,37 @@ mod tests {
         assert!(sections["peripherals"].is_empty());
         assert_eq!(junk.len(), 1);
         assert_eq!(junk[0].line, 2);
+    }
+
+    /// An inline `//` comment directly after a self-closing element is
+    /// grammar: the node parses and the comment is swallowed.
+    #[test]
+    fn inline_comment_after_leaf_node_parses() {
+        let input = "# peripherals\n  <spi id=\"spi2\" sclk=\"6\" mosi=\"7\" /> // displays generally omit miso\n  <gpio id=\"gpio4\" pin=\"4\" />\n";
+
+        let (sections, junk) = parse_espf_runtime_with_diagnostics(input);
+
+        assert!(junk.is_empty(), "expected no junk, got {junk:?}");
+        let peripherals = &sections["peripherals"];
+        assert_eq!(peripherals.len(), 2);
+        assert_eq!(peripherals[0].tag_name, "spi");
+        assert_eq!(peripherals[0].get_attr("mosi"), Some("7"));
+        assert_eq!(peripherals[1].tag_name, "gpio");
+    }
+
+    /// An inline `//` comment on its own line (not at the end of a
+    /// self-closing element) is not grammar: it is reported as junk.
+    #[test]
+    fn inline_comment_not_after_leaf_node_is_junk() {
+        let input = "# peripherals\n  // displays generally omit miso\n  <spi id=\"spi2\" sclk=\"6\" mosi=\"7\" />\n";
+
+        let (sections, junk) = parse_espf_runtime_with_diagnostics(input);
+
+        assert_eq!(junk.len(), 1, "standalone // line must be junk: {junk:?}");
+        assert_eq!(junk[0].line, 2);
+        // The well-formed node still parses.
+        assert_eq!(sections["peripherals"].len(), 1);
+        assert_eq!(sections["peripherals"][0].tag_name, "spi");
     }
 
     /// Inline trailing comments after a section heading are no longer

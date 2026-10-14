@@ -1,11 +1,12 @@
 //! Typed wrapper for the `<spi_component>` bus component.
 //!
 //! Schema (from `examples/example.espf.txt`):
-//!   `<spi_component id="display_bus" spi="$spi2" mode="0" cs="$gpio5" frequency="40MHz" />`
+//!   `<spi_component id="display_bus" spi="$spi2" mode="0" cs="gpio5" frequency="40MHz" />`
 //!
 //! Required attributes: `id`, `spi` (a `$`-prefixed reference to an `<spi>`
-//! peripheral), `mode` (SPI mode 0..=3), `cs` (a `$`-prefixed chip-select
-//! gpio reference). `frequency` is optional (e.g. `40MHz`, `10kHz`).
+//! peripheral), `mode` (SPI mode 0..=3), `cs` (a chip-select gpio referenced
+//! by plain id, with no `$` prefix). `frequency` is optional (e.g. `40MHz`,
+//! `10kHz`).
 
 use espf::context::{ActivePeripheral, Handle, RuntimeContext};
 
@@ -18,7 +19,8 @@ pub struct SpiComponent<'a> {
     pub spi_ref: &'a str,
     /// Parsed `mode` attribute (0..=3).
     pub mode: u8,
-    /// Raw `$`-reference string from the `cs` chip-select attribute.
+    /// Raw chip-select reference string from the `cs` attribute — a plain
+    /// gpio id, no `$` prefix (a legacy `$`-prefixed value is tolerated).
     pub cs_ref: &'a str,
     /// Raw `frequency` attribute, if supplied.
     pub frequency: Option<&'a str>,
@@ -54,7 +56,15 @@ impl<'a> SpiComponent<'a> {
 
         let cs_ref = node
             .get_attr("cs")
-            .ok_or_else(|| format!("❌ [spi_component] '{id}' missing required attribute 'cs'"))?;
+            .ok_or_else(|| format!("❌ [spi_component] '{id}' missing required attribute 'cs'"))?
+            .trim_start_matches('$');
+        // The chip-select must point at a known gpio peripheral.
+        let _cs_handle = ctx
+            .interner
+            .get(cs_ref)
+            .ok_or_else(|| {
+                format!("❌ [spi_component] '{id}' cs references undefined gpio '{cs_ref}'")
+            })?;
 
         let frequency = node.get_attr("frequency");
 
