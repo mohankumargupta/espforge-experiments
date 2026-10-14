@@ -8,6 +8,7 @@ build = "build.rs"
 espf = { path = "../espf" }
 esforge-bindings = { path = "../espforge-bindings" }
 clap = { version = "4", features = ["derive"] }
+semver = "1"
 esp-generate = "1.4"
 # Use the same versions your current prototype already builds with.
 winnow = { workspace = true }

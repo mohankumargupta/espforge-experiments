@@ -641,6 +641,7 @@ dependencies = [
  "esforge-bindings",
  "esp-generate",
  "espf",
+ "semver",
  "winnow 0.7.15",
 ]
 
