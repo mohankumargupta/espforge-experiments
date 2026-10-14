@@ -2,11 +2,16 @@
 name = "espforge"
 version = "0.1.0"
 edition = "2024"
+build = "build.rs"
 
 [dependencies]
 espf = { path = "../espf" }
 esforge-bindings = { path = "../espforge-bindings" }
 clap = { version = "4", features = ["derive"] }
+esp-generate = "1.4"
 # Use the same versions your current prototype already builds with.
 winnow = { workspace = true }
 annotate-snippets = { workspace = true }
+
+[build-dependencies]
+cargo_metadata = "0.23"
