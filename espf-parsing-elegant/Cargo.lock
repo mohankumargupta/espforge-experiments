@@ -640,6 +640,7 @@ dependencies = [
  "clap",
  "esforge-bindings",
  "esp-generate",
+ "esp-metadata-generated",
  "espf",
  "semver",
  "winnow 0.7.15",

@@ -10,6 +10,10 @@ esforge-bindings = { path = "../espforge-bindings" }
 clap = { version = "4", features = ["derive"] }
 semver = "1"
 esp-generate = "1.4"
+# Chip metadata (supported chips, their Rust target triples) used by doctor;
+# pinned to the same version esp-generate 1.4 itself uses so only one copy of
+# the generated data is ever compiled.
+esp-metadata-generated = { version = "0.5.3", features = ["build-script"] }
 # Use the same versions your current prototype already builds with.
 winnow = { workspace = true }
 annotate-snippets = { workspace = true }
