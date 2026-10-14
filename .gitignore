@@ -1,6 +1,7 @@
 target
 debug
 **/*.rs.bk
-
+__pycache__
 /espf-parsing-elegant/espf/src/generated_registry.rs
 /espf-parsing-elegant/esforge-bindings/src/drivers/generated_registry.rs
+/espf-parsing-elegant/espforge-bindings/src/drivers/generated_registry.rs

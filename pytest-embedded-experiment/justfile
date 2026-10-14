@@ -1,0 +1,42 @@
+export JUST_CHOOSER := "fzf --height=40% --tac --layout=reverse --border"
+
+default:
+  @just --list
+
+version:
+  uvx --with=pip esphome version
+
+compile yaml_file:
+  uvx --with=pip esphome compile {{ yaml_file}}
+
+upload yaml_file:
+  # run this with esp-emu --chip esp32c3 --uart socket://127.0.0.1:5555
+  uvx --with=pip esphome upload {{ yaml_file }} --device serial://socket://127.0.0.1:5555
+
+test:
+  uv run pytest test.py --embedded-services idf,espemu --app-path .esphome/build/helloworldc3 --espemu-image-path "{{ justfile_directory() }}/.esphome/build/helloworldc3/build/firmware.factory.bin" -s
+
+
+[no-cd]
+esp-emu name assertion="Hello World" timeout="10s":
+  #!/usr/bin/env bash
+  firmware_location=".esphome/build/{{ name }}/build/firmware.factory.bin"
+  echo "$firmware_location"
+  #esp-emu --chip esp32c3 --strap-mode 0x02 --uart-tcp 127.0.0.1:5555
+  set -x
+  esp-emu --timeout 10s --chip esp32c3 --firmware "$firmware_location" --exit-on "{{ assertion}}i" 
+
+[no-cd]
+esp-emu-uart name assertion="Hello World" timeout="20s"  :
+  #!/usr/bin/env bash
+  firmware_location=".esphome/build/{{ name }}/build/firmware.factory.bin"
+  echo "$firmware_location"
+  #esp-emu --chip esp32c3 --strap-mode 0x02 --uart-tcp 127.0.0.1:5555
+  set -x
+  esp-emu --timeout 10s --chip esp32c3 --firmware "$firmware_location" --exit-on "{{ assertion}}" --uart1-tcp 127.0.0.1:5556  
+
+clean:
+  uvx --with=pip esphome clean-all
+
+
+

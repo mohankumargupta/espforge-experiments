@@ -1,0 +1,21 @@
+esphome:
+  name: helloworldc3
+  on_boot:
+    priority: 600.0
+    then:
+      - logger.log: "Hello World!"
+
+esp32:
+  board: esp32-c3-devkitm-1
+  variant: esp32c3
+  framework:
+    type: esp-idf
+
+# The logger component handles the serial print output
+logger:
+  hardware_uart: UART0
+  level: DEBUG
+  baud_rate: 115200
+
+
+

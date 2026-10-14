@@ -1,0 +1,15 @@
+==========
+TERMINAL 1
+=========
+    esp-emu --timeout 20s --chip esp32c3 \
+        --firmware .esphome/build/helloworldc3/build/firmware.factory.bin \
+        --uart1-tcp 127.0.0.1:5556 --exit-on "Hello World"
+
+==========
+TERMINAL 2
+==========
+
+    python3 mock.py 5556
+
+
+
