@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["espf", "espforge", "espforge-bindings", "espforge-examples", "espforge-model"]
+members = ["espf", "espforge", "espforge-bindings", "espforge-emit", "espforge-examples", "espforge-model", "espforge-runtime"]
 
 [workspace.dependencies]
 # Use the same versions your current prototype already builds with.
