@@ -6,3 +6,7 @@ edition = "2024"
 [dependencies]
 espforge-model = { path = "../espforge-model" }
 anyhow = "1"
+serde_json = "1"
+
+[dev-dependencies]
+tempfile = "3"

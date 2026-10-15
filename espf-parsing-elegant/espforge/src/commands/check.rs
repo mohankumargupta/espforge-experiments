@@ -78,7 +78,11 @@ pub fn run(file: &Path) {
     println!("\n🎉 System pipeline successfully initialised and executing.");
 }
 
-fn render_syntax_diagnostics(file_path: &str, espf_source: &str, junk: &[JunkSpan]) -> bool {
+pub(crate) fn render_syntax_diagnostics(
+    file_path: &str,
+    espf_source: &str,
+    junk: &[JunkSpan],
+) -> bool {
     if junk.is_empty() {
         return false;
     }

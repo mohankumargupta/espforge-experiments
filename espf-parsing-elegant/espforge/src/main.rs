@@ -26,6 +26,19 @@ enum Commands {
         /// Path to the ESPF runtime file to check
         file: PathBuf,
     },
+    /// Generate a firmware project from an ESPF file.
+    #[command(after_help = "Example:\n  espforge build hello.espf --out build")]
+    Build {
+        /// Path to the ESPF project file (expects src/app.rs next to it)
+        file: PathBuf,
+        /// Output directory for the generated project
+        #[arg(short, long, default_value = "build")]
+        out: PathBuf,
+        /// Use a local espforge-runtime crate instead of the published one
+        /// (or set ESPFORGE_RUNTIME_PATH)
+        #[arg(long)]
+        runtime_path: Option<PathBuf>,
+    },
     /// Scaffold a new ESPF project.
     #[command(after_help = "Example:\n  espforge new")]
     New,
@@ -45,6 +58,16 @@ fn main() {
 
     match cli.command {
         Some(Commands::Check { file }) => commands::check::run(&file),
+        Some(Commands::Build {
+            file,
+            out,
+            runtime_path,
+        }) => {
+            if let Err(e) = commands::build::run(&file, &out, runtime_path) {
+                eprintln!("❌ {e:#}");
+                std::process::exit(1);
+            }
+        }
         Some(Commands::New) => commands::new::run(),
         Some(Commands::Examples) => commands::examples::run(),
         Some(Commands::Doctor) => commands::doctor::run(),

@@ -5,6 +5,8 @@ edition = "2024"
 build = "build.rs"
 
 [dependencies]
+espforge-emit = { path = "../espforge-emit" }
+anyhow = "1"
 espf = { path = "../espf" }
 espforge-bindings = { path = "../espforge-bindings" }
 espforge-model = { path = "../espforge-model" }
