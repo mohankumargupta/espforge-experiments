@@ -4,6 +4,16 @@ pub enum Runtime {
     Embassy,
 }
 
+/// Where `print!`/log output goes (esp-println's backend).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum Console {
+    /// Plain UART. Works on every chip.
+    #[default]
+    Uart,
+    /// Built-in USB-Serial-JTAG peripheral (not on the original ESP32).
+    JtagSerial,
+}
+
 /// Contents of the `# espforge` section.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Meta {
@@ -11,6 +21,7 @@ pub struct Meta {
     pub description: Option<String>,
     pub chip: String,
     pub runtime: Runtime,
+    pub console: Console,
 }
 
 impl Meta {
@@ -110,6 +121,7 @@ mod tests {
             description: None,
             chip: "esp32c3".into(),
             runtime: Runtime::Blocking,
+            console: Console::default(),
         }
     }
 
@@ -119,5 +131,10 @@ mod tests {
         assert_eq!(meta("Hello-World").crate_name(), "hello_world");
         assert_eq!(meta("3d").crate_name(), "p_3d");
         assert_eq!(meta("!!!").crate_name(), "espforge_project");
+    }
+
+    #[test]
+    fn console_defaults_to_uart() {
+        assert_eq!(Console::default(), Console::Uart);
     }
 }

@@ -85,7 +85,7 @@ fn merge_directories(src: &Path, dst: &Path) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use espforge_model::{Meta, Runtime};
+    use espforge_model::{Console, Meta, Runtime};
 
     fn project(runtime: Runtime) -> Project {
         Project::new(Meta {
@@ -93,6 +93,7 @@ mod tests {
             description: None,
             chip: "esp32c3".into(),
             runtime,
+            console: Console::default(),
         })
     }
 

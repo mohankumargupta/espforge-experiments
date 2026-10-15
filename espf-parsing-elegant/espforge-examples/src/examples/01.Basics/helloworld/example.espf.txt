@@ -6,7 +6,7 @@ HELLO WORLD EXAMPLE
   <project name="example project"/>
   <chip type="esp32c3" />
   <runtime type="blocking" />
-
+  <console type="uart" />
 # peripherals
 
 # components

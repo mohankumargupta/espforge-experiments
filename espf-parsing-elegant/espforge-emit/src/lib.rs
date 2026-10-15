@@ -80,7 +80,7 @@ fn read_prev_manifest(out_dir: &Path) -> Result<BTreeMap<String, String>> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use espforge_model::{Meta, Runtime};
+    use espforge_model::{Console, Meta, Runtime};
 
     fn artifacts() -> Vec<Artifact> {
         let project = Project::new(Meta {
@@ -88,6 +88,7 @@ mod tests {
             description: None,
             chip: "esp32c3".into(),
             runtime: Runtime::Blocking,
+            console: Console::default(),
         });
         let opts = EmitOptions {
             runtime_source: RuntimeSource::Published,
