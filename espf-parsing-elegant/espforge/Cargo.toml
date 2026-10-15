@@ -6,7 +6,8 @@ build = "build.rs"
 
 [dependencies]
 espf = { path = "../espf" }
-esforge-bindings = { path = "../espforge-bindings" }
+espforge-bindings = { path = "../espforge-bindings" }
+espforge-model = { path = "../espforge-model" }
 clap = { version = "4", features = ["derive"] }
 semver = "1"
 esp-generate = "1.4"

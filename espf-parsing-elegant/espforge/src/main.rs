@@ -1,4 +1,5 @@
 mod commands;
+mod sections;
 
 use clap::{CommandFactory, Parser, Subcommand};
 use std::path::PathBuf;
@@ -17,7 +18,10 @@ enum Commands {
     /// Example:
     ///   espforge check runtime.esp
     ///   espforge validate devices.runtime
-    #[command(alias = "validate", after_help = "Examples:\n  espforge check runtime.esp\n  espforge validate devices.runtime")]
+    #[command(
+        alias = "validate",
+        after_help = "Examples:\n  espforge check runtime.esp\n  espforge validate devices.runtime"
+    )]
     Check {
         /// Path to the ESPF runtime file to check
         file: PathBuf,
@@ -47,7 +51,9 @@ fn main() {
         Some(Commands::Version) => commands::version::run(),
         // No subcommand given: show help instead of erroring.
         None => {
-            Cli::command().print_help().expect("rendering help should not fail");
+            Cli::command()
+                .print_help()
+                .expect("rendering help should not fail");
         }
     }
 }

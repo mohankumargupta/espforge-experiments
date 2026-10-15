@@ -618,13 +618,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "esforge-bindings"
-version = "0.1.0"
-dependencies = [
- "espf",
-]
-
-[[package]]
 name = "esp-generate"
 version = "1.4.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -671,14 +664,26 @@ dependencies = [
  "cargo_metadata",
  "clap",
  "cliclack",
- "esforge-bindings",
  "esp-generate",
  "esp-metadata-generated",
  "espf",
+ "espforge-bindings",
+ "espforge-model",
  "espforge_examples",
  "semver",
  "winnow 0.7.15",
 ]
+
+[[package]]
+name = "espforge-bindings"
+version = "0.1.0"
+dependencies = [
+ "espf",
+]
+
+[[package]]
+name = "espforge-model"
+version = "0.1.0"
 
 [[package]]
 name = "espforge_examples"

@@ -6,3 +6,5 @@ __pycache__
 /espf-parsing-elegant/esforge-bindings/src/drivers/generated_registry.rs
 /espf-parsing-elegant/espforge-bindings/src/drivers/generated_registry.rs
 /pytest-embedded-experiment/helloworld/firmware.factory.bin
+/espforge.md
+/espforgenext.md
