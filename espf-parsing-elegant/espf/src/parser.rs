@@ -1,9 +1,9 @@
 use crate::context::{ParsedNode, TagAttribute};
-use crate::diag::JunkSpan;
+use crate::diag::{JunkKind, JunkSpan};
 use std::collections::HashMap;
 use winnow::{
     ascii::{multispace0, multispace1, till_line_ending},
-    combinator::{delimited, dispatch, fail, opt, peek, preceded, separated_pair},
+    combinator::{dispatch, fail, opt, peek, preceded},
     stream::Stream,
     token::{any, take_while},
     ModalResult, Parser,
@@ -85,29 +85,43 @@ fn unquoted_value<'a>(input: &mut &'a str) -> ModalResult<&'a str> {
 }
 
 /// `key="value"`
-fn attribute<'a>(input: &mut &'a str) -> ModalResult<TagAttribute<'a>> {
-    separated_pair(identifier, '=', delimited('"', unquoted_value, '"'))
-        .map(|(key, val)| TagAttribute { key, val })
-        .parse_next(input)
+///
+/// Runs in two phases so the value's byte offset into the original file can
+/// be recorded for span-aware diagnostics. Parsing semantics are unchanged:
+/// a missing closing `"` fails the attribute (and thus the line).
+fn attribute<'a>(input: &mut &'a str, file: &str) -> ModalResult<TagAttribute<'a>> {
+    let key = identifier.parse_next(input)?;
+    let _ = '='.void().parse_next(input)?;
+    let _ = '"'.void().parse_next(input)?;
+    let val_offset = consumed_since(input, file);
+    let val = unquoted_value.parse_next(input)?;
+    let _ = '"'.void().parse_next(input)?;
+    Ok(TagAttribute { key, val, val_offset })
 }
 
 /// Self-closing tag: `<tag attr="v" ... />`
-fn parse_node<'a>(input: &mut &'a str) -> ModalResult<ParsedNode<'a>> {
+fn parse_node<'a>(input: &mut &'a str, file: &str) -> ModalResult<ParsedNode<'a>> {
     preceded(
         (multispace0, '<'),
         (
-            identifier,
-            winnow::combinator::repeat(0.., preceded(multispace1, attribute)),
+            // Record the byte offset of the tag start for diagnostics:
+            // exactly one byte (`<`) has been consumed here.
+            move |input: &mut &'a str| {
+                let tag_offset = consumed_since(input, file).saturating_sub(1);
+                identifier.parse_next(input).map(|t| (t, tag_offset))
+            },
+            winnow::combinator::repeat(0.., preceded(multispace1, move |input: &mut &'a str| attribute(input, file))),
             preceded(multispace0, "/>"),
         ),
     )
-    .map(|(tag_name, attributes, _): (&str, Vec<TagAttribute>, &str)| {
+    .map(|(tag, attributes, _): ((&str, usize), Vec<TagAttribute>, &str)| {
+        let (tag_name, tag_offset) = tag;
         let id = attributes
             .iter()
             .find(|a| a.key == "id")
             .map(|a| a.val)
             .unwrap_or("");
-        ParsedNode { tag_name, id, attributes }
+        ParsedNode { offset: tag_offset, tag_name, id, attributes }
     })
     .parse_next(input)
 }
@@ -162,7 +176,7 @@ fn section_content<'a>(
         // the checkpoint first: the junk offset must point at the *start* of
         // the offending line.
         let checkpoint = input.checkpoint();
-        if let Ok(node) = parse_node.parse_next(input) {
+        if let Ok(node) = parse_node(input, file) {
             // A leaf node must stand on its own line: after `/>` only blanks
             // may remain before the newline/EOF, except for a trailing
             // inline `//` comment, which is allowed directly after the
@@ -192,6 +206,7 @@ fn section_content<'a>(
         junk_spans.push(JunkSpan {
             offset: junk_offset,
             line: crate::diag::line_number_for_offset(file, junk_offset),
+            kind: JunkKind::NodeLine,
         });
 
         let _ = till_line_ending.parse_next(input)?;
@@ -206,6 +221,7 @@ fn parse_impl<'a>(
     mut input: &'a str,
     file: &'a str,
     junk_spans: &mut Vec<JunkSpan>,
+    header_offsets: &mut HashMap<String, usize>,
 ) -> HashMap<String, Vec<ParsedNode<'a>>> {
     skip_trivia.parse_next(&mut input).ok();
 
@@ -229,6 +245,7 @@ fn parse_impl<'a>(
                 junk_spans.push(JunkSpan {
                     offset: header_offset,
                     line: crate::diag::line_number_for_offset(file, header_offset),
+                    kind: JunkKind::SectionHeader,
                 });
                 let _: ModalResult<&str> = till_line_ending.parse_next(&mut input);
                 let _ = consume_newline(&mut input);
@@ -240,6 +257,7 @@ fn parse_impl<'a>(
 
         match section_content(&mut input, file, junk_spans) {
             Ok(nodes) => {
+                header_offsets.insert(section_name.to_string(), header_offset);
                 sections.insert(section_name.to_string(), nodes);
             }
             Err(_) => {
@@ -260,10 +278,15 @@ fn parse_impl<'a>(
 /// so the caller decides whether to render an error or proceed.
 pub fn parse_espf_runtime_with_diagnostics<'a>(
     input: &'a str,
-) -> (HashMap<String, Vec<ParsedNode<'a>>>, Vec<JunkSpan>) {
+) -> (
+    HashMap<String, Vec<ParsedNode<'a>>>,
+    Vec<JunkSpan>,
+    HashMap<String, usize>,
+) {
     let mut junk_spans = Vec::new();
-    let sections = parse_impl(input, input, &mut junk_spans);
-    (sections, junk_spans)
+    let mut header_offsets = HashMap::new();
+    let sections = parse_impl(input, input, &mut junk_spans, &mut header_offsets);
+    (sections, junk_spans, header_offsets)
 }
 
 /// Backwards-compatible entry point: keeps the original strict-ish behavior of
@@ -329,7 +352,7 @@ mod tests {
             "=\n",
         );
 
-        let (sections, junk) = parse_espf_runtime_with_diagnostics(input);
+        let (sections, junk, _) = parse_espf_runtime_with_diagnostics(input);
 
         assert!(junk.is_empty(), "comment lines must not be junk: {junk:?}");
         assert_eq!(sections["peripherals"].len(), 1);
@@ -341,7 +364,7 @@ mod tests {
     fn quoted_values_cannot_be_multiline() {
         let input = "# peripherals\n  <gpio id=\"gpio4\" pin=\"4 />\n  <spi id=\"spi2\" sclk=\"6\" mosi=\"7\" />\n";
 
-        let (sections, junk) = parse_espf_runtime_with_diagnostics(input);
+        let (sections, junk, _) = parse_espf_runtime_with_diagnostics(input);
 
         let peripherals = &sections["peripherals"];
         assert_eq!(peripherals.len(), 1, "only the well-formed spi node parses");
@@ -358,7 +381,7 @@ mod tests {
     fn non_comment_text_after_leaf_node_is_junk() {
         let input = "# peripherals\n  <spi id=\"spi2\" sclk=\"6\" mosi=\"7\" /> --- note\n";
 
-        let (sections, junk) = parse_espf_runtime_with_diagnostics(input);
+        let (sections, junk, _) = parse_espf_runtime_with_diagnostics(input);
 
         assert!(sections["peripherals"].is_empty());
         assert_eq!(junk.len(), 1);
@@ -371,7 +394,7 @@ mod tests {
     fn inline_comment_after_leaf_node_parses() {
         let input = "# peripherals\n  <spi id=\"spi2\" sclk=\"6\" mosi=\"7\" /> // displays generally omit miso\n  <gpio id=\"gpio4\" pin=\"4\" />\n";
 
-        let (sections, junk) = parse_espf_runtime_with_diagnostics(input);
+        let (sections, junk, _) = parse_espf_runtime_with_diagnostics(input);
 
         assert!(junk.is_empty(), "expected no junk, got {junk:?}");
         let peripherals = &sections["peripherals"];
@@ -387,7 +410,7 @@ mod tests {
     fn inline_comment_not_after_leaf_node_is_junk() {
         let input = "# peripherals\n  // displays generally omit miso\n  <spi id=\"spi2\" sclk=\"6\" mosi=\"7\" />\n";
 
-        let (sections, junk) = parse_espf_runtime_with_diagnostics(input);
+        let (sections, junk, _) = parse_espf_runtime_with_diagnostics(input);
 
         assert_eq!(junk.len(), 1, "standalone // line must be junk: {junk:?}");
         assert_eq!(junk[0].line, 2);
@@ -404,7 +427,7 @@ mod tests {
         let input =
             "# peripherals --- note\n  <spi id=\"spi2\" sclk=\"6\" mosi=\"7\" />\n";
 
-        let (sections, junk) = parse_espf_runtime_with_diagnostics(input);
+        let (sections, junk, _) = parse_espf_runtime_with_diagnostics(input);
 
         assert_eq!(junk.len(), 1);
         assert_eq!(junk[0].line, 1);
@@ -420,7 +443,7 @@ mod tests {
     fn rejects_node_with_missing_closing_quote() {
         let input = "# peripherals\n  <gpio id=\"gpio4\" pin=\"4 />\n";
 
-        let (sections, junk) = parse_espf_runtime_with_diagnostics(input);
+        let (sections, junk, _) = parse_espf_runtime_with_diagnostics(input);
 
         // The malformed node must not come back with a truncated attribute.
         let peripherals = &sections["peripherals"];
@@ -443,7 +466,7 @@ mod tests {
     #[test]
     fn junk_offset_points_at_offending_line() {
         let input = "# peripherals\n<gpio id=\"a\"/ />\n";
-        let (_sections, junk) = parse_espf_runtime_with_diagnostics(input);
+        let (_sections, junk, _) = parse_espf_runtime_with_diagnostics(input);
         assert_eq!(junk.len(), 1);
         assert_eq!(junk[0].offset, "# peripherals\n".len());
     }

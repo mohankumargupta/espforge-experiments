@@ -11,16 +11,22 @@ pub fn run(file: &Path, out: &Path, runtime_path: Option<PathBuf>) -> Result<()>
         .with_context(|| format!("cannot read '{}'", file.display()))?;
     let file_str = file.to_string_lossy();
 
-    let (mut sections, junk) = espf::parser::parse_espf_runtime_with_diagnostics(&src);
-    if super::check::render_syntax_diagnostics(&file_str, &src, &junk) {
-        bail!("'{file_str}' has syntax errors");
+    let (mut sections, junk, section_offsets) = espf::parser::parse_espf_runtime_with_diagnostics(&src);
+    let syntax_errors = espf::diag::junk_errors(&junk);
+    if !syntax_errors.is_empty() {
+        super::check::fail_with_diagnostics(&file_str, &src, &syntax_errors);
     }
 
     let nodes = sections
         .remove("espforge")
         .ok_or_else(|| anyhow!("'{file_str}' has no `# espforge` section"))?;
-    let meta = parse_meta(&nodes)
-        .map_err(|errs| anyhow!("invalid `# espforge` section:\n  {}", errs.join("\n  ")))?;
+    let meta = parse_meta(
+        section_offsets.get("espforge").copied().unwrap_or(0),
+        &nodes,
+    )
+    .unwrap_or_else(|errors| {
+        super::check::fail_with_diagnostics(&file_str, &src, &errors)
+    });
 
     // Be explicit rather than silently generating firmware that lacks devices.
     for name in ["peripherals", "components", "devices"] {

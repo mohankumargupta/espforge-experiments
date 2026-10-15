@@ -1,5 +1,5 @@
 use espf::context::RuntimeContext;
-use espf::diag::{EspfSnippetError, JunkSpan, render_espf_report};
+use espf::diag::{EspfError, render_errors};
 use espforge_bindings::drivers::generated_registry::route_driver;
 use std::path::Path;
 
@@ -15,40 +15,29 @@ pub fn run(file: &Path) {
         }
     };
 
-    println!("--- Phase 1: Launching Winnow Zero-Copy String Tokenizer ---");
     let file_str = file.to_string_lossy();
-    let (mut parsed_sections, junk_spans) =
+    let (mut parsed_sections, junk_spans, section_offsets) =
         espf::parser::parse_espf_runtime_with_diagnostics(&espf_runtime_file);
 
-    if render_syntax_diagnostics(&file_str, &espf_runtime_file, &junk_spans) {
-        std::process::exit(1);
+    // 1. Syntax: junk lines the parser could not interpret.
+    let errors = espf::diag::junk_errors(&junk_spans);
+    if !errors.is_empty() {
+        fail_with_diagnostics(&file_str, &espf_runtime_file, &errors);
     }
 
-    println!("--- Phase 2: Reading the `# espforge` section ---");
     let Some(espforge_nodes) = parsed_sections.remove("espforge") else {
         eprintln!("❌ '{}' has no `# espforge` section", file_str);
         std::process::exit(1);
     };
-    let meta = match parse_meta(&espforge_nodes) {
-        Ok(meta) => meta,
-        Err(errors) => {
-            for e in &errors {
-                eprintln!("❌ {e}");
-            }
-            eprintln!(
-                "❌ Found {} problem(s) in `# espforge` of '{}'",
-                errors.len(),
-                file_str
-            );
-            std::process::exit(1);
-        }
-    };
-    println!(
-        "project: {} | chip: {} | runtime: {:?}",
-        meta.name, meta.chip, meta.runtime
-    );
 
-    // Harvest empty fallbacks if specific sections are missing from target load file
+    // 2. Meta schema: everything under `# espforge`.
+    if let Err(errors) = parse_meta(
+        section_offsets.get("espforge").copied().unwrap_or(0),
+        &espforge_nodes,
+    ) {
+        fail_with_diagnostics(&file_str, &espf_runtime_file, &errors);
+    }
+
     let empty = vec![];
     let peripherals = parsed_sections
         .remove("peripherals")
@@ -58,48 +47,26 @@ pub fn run(file: &Path) {
         .unwrap_or(empty.clone());
     let devices = parsed_sections.remove("devices").unwrap_or(empty);
 
-    println!("--- Phase 3: Resolving Dynamic Topological Dependency Chains ---");
+    // 3. `$` dependency graph across sections.
     let mut runtime_ctx = RuntimeContext::new();
-    if let Err(e) = runtime_ctx.resolve_and_bind(&peripherals, &components, &devices) {
-        eprintln!("\n{e}");
-        eprintln!(
-            "❌ Dependency resolution failed in '{}'; check that every '$' reference points to an id defined in an earlier section.",
-            file_str
-        );
-        std::process::exit(1);
+    if let Err(errors) = runtime_ctx.resolve_and_bind(&peripherals, &components, &devices) {
+        fail_with_diagnostics(&file_str, &espf_runtime_file, &errors);
     }
 
-    println!("--- Phase 4: Executing Safe Array Drivers Dispatch Sweeps ---\n");
     for resolved_device in &runtime_ctx.resolved_devices {
-        // Route driver matches string names using code generated instantly by build.rs
         route_driver(resolved_device.tag_name, resolved_device, &runtime_ctx).unwrap();
     }
 
-    println!("\n🎉 System pipeline successfully initialised and executing.");
+    println!("✓ {} is valid", file_str);
 }
 
-pub(crate) fn render_syntax_diagnostics(
-    file_path: &str,
-    espf_source: &str,
-    junk: &[JunkSpan],
-) -> bool {
-    if junk.is_empty() {
-        return false;
-    }
-
-    let primary = EspfSnippetError::UnterminatedNode {
-        span: junk[0].offset..junk[0].offset,
-    };
-    let report = render_espf_report(file_path, espf_source, junk, &primary);
-    eprintln!("{report}");
+/// Print each errors as a snippet block, then a one-line summary, then exit.
+pub(crate) fn fail_with_diagnostics(file_path: &str, src: &str, errors: &[EspfError]) -> ! {
+    eprintln!("{}", render_errors(file_path, src, errors));
     eprintln!(
-        "❌ Found {} malformed line(s) in '{}'; run with a corrected file.",
-        junk.len(),
-        file_str_or(file_path)
+        "❌ Found {} problem(s) in '{}'; fix them and re-run.",
+        errors.len(),
+        file_path
     );
-    true
-}
-
-fn file_str_or(path: &str) -> &str {
-    path
+    std::process::exit(1);
 }
