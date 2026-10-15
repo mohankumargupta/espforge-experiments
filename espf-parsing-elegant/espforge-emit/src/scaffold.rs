@@ -10,31 +10,29 @@ use std::process::Command;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 /// The exact argument list passed to `esp-generate`.
+/// The chip is a plain `-o` option (e.g. `-o esp32c3`).
 pub fn esp_generate_args(project: &Project) -> Vec<String> {
-    let mut args: Vec<String> = vec![
-        "--headless".into(),
-        "--chip".into(),
-        project.meta.chip.clone(),
-    ];
-    let mut option = |name: &str| {
-        args.push("-o".into());
-        args.push(name.into());
-    };
-    for o in [
+    let mut options: Vec<&str> = vec![
+        project.meta.chip.as_str(),
         "log",
         "unstable-hal",
         "alloc",
         "esp-backtrace",
         "wokwi",
         "vscode",
-    ] {
-        option(o);
-    }
+    ];
     if project.flags.is_embassy {
-        option("embassy");
+        options.push("embassy");
     }
     if project.flags.has_wifi {
-        option("wifi");
+        options.push("wifi");
+    }
+
+    // `--skip-update-check` keeps headless runs from hitting the network.
+    let mut args: Vec<String> = vec!["--headless".into(), "--skip-update-check".into()];
+    for o in options {
+        args.push("-o".into());
+        args.push(o.into());
     }
     args.push(project.meta.crate_name());
     args
@@ -101,7 +99,8 @@ mod tests {
     #[test]
     fn args_for_blocking_project() {
         let args = esp_generate_args(&project(Runtime::Blocking));
-        assert_eq!(&args[..3], ["--headless", "--chip", "esp32c3"]);
+        assert_eq!(&args[..2], ["--headless", "--skip-update-check"]);
+        assert_eq!(&args[2..4], ["-o", "esp32c3"]);
         assert_eq!(args.last().unwrap(), "example_project");
         assert!(!args.contains(&"embassy".to_string()));
     }
