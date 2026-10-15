@@ -200,6 +200,7 @@ use {name}::{{app, Components, Context, Devices, PeripheralRegistry, CTX}};
 fn main() -> ! {{
     esp_println::logger::init_logger_from_env();
     esp_println::print!("\x1b[20h");
+    esp_bootloader_esp_idf::esp_app_desc!();
     let peripherals = esp_hal::init(esp_hal::Config::default());
     let _registry = PeripheralRegistry::new(peripherals);
 
