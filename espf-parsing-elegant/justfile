@@ -16,8 +16,6 @@ upload yaml_file:
 merge_bin:
   #!/usr/bin/env bash
   pwd
-  
-  cd helloworld
   cargo espflash save-image --merge firmware.factory.bin --chip esp32c3
 
 test:
@@ -27,11 +25,12 @@ test:
 # pytest-embedded expects an ESP-IDF build dir (flasher_args.json etc.), which a
 # cargo project doesn't have, so we build the merged factory image with
 # cargo-espflash and shim an IDF-style build dir under .esphal/ for IdfApp to parse.
-testesphal:
+testesphal out="/tmp/helloworlddemo" app_path=".":
   #!/usr/bin/env bash
   set -e
+  mkdir -p "${out}"
   echo "Building the esp-hal (Rust) firmware image..."
-  (cd helloworld && cargo build && cargo espflash save-image --merge firmware.factory.bin --chip esp32c3)
+  (cd $out && cargo build && cargo espflash save-image --merge firmware.factory.bin --chip esp32c3)
   echo "Shimming an ESP-IDF-style build dir for pytest-embedded's IdfApp..."
   shim=".esphal/helloworld/build"
   mkdir -p "$shim"

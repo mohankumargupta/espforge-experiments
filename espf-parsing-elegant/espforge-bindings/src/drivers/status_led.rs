@@ -1,4 +1,4 @@
-use espf::context::{ActivePeripheral, RuntimeContext, ResolvedDevice};
+use espf::context::{ActivePeripheral, ResolvedDevice, RuntimeContext};
 
 pub fn init(device: &ResolvedDevice, ctx: &RuntimeContext) -> Result<(), String> {
     // Direct integer-offset array lookup. No string searching!
@@ -27,10 +27,10 @@ pub fn init(device: &ResolvedDevice, ctx: &RuntimeContext) -> Result<(), String>
         ));
     }
 
-    println!(
-        "🚀 [Driver Initialised] Type: Status LED | ID: '{}' (Handle: {}) | Bound to GPIO component slot: {}",
-        device.raw_node.id, device.id_handle.0, device.component_handle.0
-    );
-
+    // println!(
+    //     "🚀 [Driver Initialised] Type: Status LED | ID: '{}' (Handle: {}) | Bound to GPIO component slot: {}",
+    //     device.raw_node.id, device.id_handle.0, device.component_handle.0
+    // );
+    //
     Ok(())
 }
