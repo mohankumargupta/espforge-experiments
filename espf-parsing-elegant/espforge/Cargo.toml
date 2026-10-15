@@ -17,6 +17,8 @@ esp-metadata-generated = { version = "0.5.3", features = ["build-script"] }
 # Use the same versions your current prototype already builds with.
 winnow = { workspace = true }
 annotate-snippets = { workspace = true }
+cliclack = "0.5.6"
+espforge_examples = { version = "0.1.9", path = "../espforge-examples" }
 
 [build-dependencies]
 cargo_metadata = "0.23"
