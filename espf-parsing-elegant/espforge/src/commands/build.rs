@@ -35,18 +35,27 @@ pub fn run(file: &Path, out: &Path, runtime_path: Option<PathBuf>) -> Result<()>
         }
     }
 
-    // The user's app logic lives next to the .espf file: <dir>/src/app.rs
+    // The user's app logic lives next to the .espf file. Preferred layout:
+    // <dir>/src/app.rs; the layout used by embedded examples (<dir>/app/rust/app.rs)
+    // is accepted too (see cli.md, stage 2).
     let spec_dir = file
         .parent()
         .filter(|p| !p.as_os_str().is_empty())
         .unwrap_or(Path::new("."));
     let app_src = spec_dir.join("src").join("app.rs");
-    if !app_src.is_file() {
-        bail!(
-            "missing {} (your app logic: setup/forever)",
-            app_src.display()
-        );
-    }
+    let app_src = if app_src.is_file() {
+        app_src
+    } else {
+        let example_layout = spec_dir.join("app").join("rust").join("app.rs");
+        if !example_layout.is_file() {
+            bail!(
+                "missing {} (or {}) — your app logic: setup/forever",
+                app_src.display(),
+                example_layout.display()
+            );
+        }
+        example_layout
+    };
 
     let project = Project::new(meta);
 

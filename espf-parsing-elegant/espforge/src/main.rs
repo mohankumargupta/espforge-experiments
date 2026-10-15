@@ -42,15 +42,46 @@ enum Commands {
     /// Scaffold a new ESPF project.
     #[command(after_help = "Example:\n  espforge new")]
     New,
-    /// Browse the ESPF examples embedded in this binary.
-    #[command(after_help = "Example:\n  espforge examples")]
-    Examples,
+    /// Turn an embedded ESPF example into an editable project folder.
+    ///
+    /// Bare `examples` opens the interactive picker (category → example →
+    /// destination folder) and materializes the chosen example. Subcommands
+    /// are the non-interactive plumbing surface:
+    ///
+    ///   espforge examples list [category]
+    ///   espforge examples get <category>/<name> --out <dir>
+    #[command(
+        after_help = "Examples:\n  espforge examples\n  espforge examples list 01.Basics\n  espforge examples get 01.Basics/button --out button"
+    )]
+    Examples {
+        #[command(subcommand)]
+        command: Option<ExamplesSub>,
+    },
     /// Check that prerequisites (toolchain, binaries, env) are met.
     #[command(after_help = "Example:\n  espforge doctor")]
     Doctor,
     /// Print version/build information.
     #[command(after_help = "Example:\n  espforge version")]
     Version,
+}
+
+/// Non-interactive (plumbing) subcommands of `examples`: no prompts, plain
+/// output, scriptable exit codes.
+#[derive(Subcommand)]
+enum ExamplesSub {
+    /// List embedded examples, one per line: `category/name<TAB>title`.
+    List {
+        /// Only list examples of this category (e.g. `01.Basics`)
+        category: Option<String>,
+    },
+    /// Copy an embedded example to a new folder (destination never overwritten).
+    Get {
+        /// The example to copy, as `category/name` (e.g. `01.Basics/button`)
+        example: String,
+        /// Destination folder for the example (required, never overwritten)
+        #[arg(short, long)]
+        out: PathBuf,
+    },
 }
 
 fn main() {
@@ -69,7 +100,22 @@ fn main() {
             }
         }
         Some(Commands::New) => commands::new::run(),
-        Some(Commands::Examples) => commands::examples::run(),
+        Some(Commands::Examples { command }) => match command {
+            Some(ExamplesSub::List { category }) => {
+                if let Err(e) = commands::examples::run_list(category.as_deref()) {
+                    eprintln!("❌ {e:#}");
+                    std::process::exit(1);
+                }
+            }
+            Some(ExamplesSub::Get { example, out }) => {
+                if let Err(e) = commands::examples::run_get(&example, &out) {
+                    eprintln!("❌ {e:#}");
+                    std::process::exit(1);
+                }
+            }
+            // No plumbing subcommand: the interactive browser.
+            None => commands::examples::run(),
+        },
         Some(Commands::Doctor) => commands::doctor::run(),
         Some(Commands::Version) => commands::version::run(),
         // No subcommand given: show help instead of erroring.
