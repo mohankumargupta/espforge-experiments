@@ -112,7 +112,15 @@ mod tests {
 
     #[test]
     fn empty_categories_are_dropped() {
-        // `02.Digital` and `04.Communications` currently have no examples.
-        assert!(!categories().iter().any(|c| c.name == "02.Digital"));
+        // A category with no `example.espf.txt` is dropped, so categories()
+        // must never contain an empty category. `02.Digital` used to be empty
+        // and dropped; it now carries the converted button examples.
+        let categories = categories();
+        assert!(categories.iter().all(|c| !c.examples.is_empty()));
+        let digital = categories
+            .iter()
+            .find(|c| c.name == "02.Digital")
+            .expect("02.Digital examples must be embedded");
+        assert_eq!(digital.examples.len(), 2);
     }
 }
