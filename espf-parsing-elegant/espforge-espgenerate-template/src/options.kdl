@@ -4,7 +4,6 @@ required "chip"
 // Options container
 options {
     include plugin="chip"
-    include path="chips.kdl"
 
     option "unstable-hal" display_name="Enable unstable HAL features." {
         help "This configuration enables unstable esp-hal features. These come with no stability guarantees, and could be changed or removed at any time."

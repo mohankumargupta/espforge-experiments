@@ -1209,6 +1209,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "espforge-espgenerate-template"
+version = "0.1.9"
+dependencies = [
+ "include_dir",
+]
+
+[[package]]
 name = "espforge-model"
 version = "0.1.0"
 
