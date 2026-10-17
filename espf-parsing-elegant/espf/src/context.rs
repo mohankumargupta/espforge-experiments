@@ -25,9 +25,21 @@ impl<'a> IdInterner<'a> {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AttrOp {
+    /// `key="v"`
+    Set,
+    /// `key+="v"`
+    Append,
+}
+
 #[derive(Debug, Clone)]
 pub struct TagAttribute<'a> {
+    /// Full key, possibly dotted (`network1.ssid`).
     pub key: &'a str,
+    pub op: AttrOp,
+    /// Byte offset of the key's first character in the original file.
+    pub key_offset: usize,
     pub val: &'a str,
     /// Byte offset of the value's first character in the original file.
     pub val_offset: usize,
@@ -104,7 +116,10 @@ impl<'a> RuntimeContext<'a> {
                 errors.push(crate::diag::EspfError::at_node(
                     peri,
                     "peripheral is missing an id",
-                    format!("<{}> needs an id=\"...\" attribute so `$` references can bind to it", peri.tag_name),
+                    format!(
+                        "<{}> needs an id=\"...\" attribute so `$` references can bind to it",
+                        peri.tag_name
+                    ),
                 ));
                 continue;
             }
@@ -187,10 +202,7 @@ impl<'a> RuntimeContext<'a> {
             }
             let dev_handle = self.interner.get_or_insert(dev.id);
 
-            let Some(comp_attr) = dev
-                .attributes
-                .iter()
-                .find(|a| a.key.contains("component"))
+            let Some(comp_attr) = dev.attributes.iter().find(|a| a.key.contains("component"))
             else {
                 errors.push(crate::diag::EspfError::at_node(
                     dev,
@@ -243,7 +255,8 @@ fn parse_u8_attr(
         Ok(v) => Some(v),
         Err(_) => {
             errors.push(crate::diag::EspfError::at_attr(
-                node.get_attr_spanned(key).unwrap_or_else(|| unreachable!("val came from get_attr")),
+                node.get_attr_spanned(key)
+                    .unwrap_or_else(|| unreachable!("val came from get_attr")),
                 "invalid pin number",
                 format!("`{key}=\"{val}\"` must be a number in 0..=255"),
             ));
@@ -261,7 +274,10 @@ mod tests {
     fn compile(src: &str) -> Vec<ParsedNode> {
         let sections = parse_espf_runtime(src);
         [
-            sections.get("peripherals").map(Vec::as_slice).unwrap_or(&[]),
+            sections
+                .get("peripherals")
+                .map(Vec::as_slice)
+                .unwrap_or(&[]),
             sections.get("components").map(Vec::as_slice).unwrap_or(&[]),
             sections.get("devices").map(Vec::as_slice).unwrap_or(&[]),
         ]
@@ -292,7 +308,8 @@ mod tests {
         let all = compile(src);
         let (peris, comps, devs) = (&all[..1], &all[1..2], &all[2..]);
         let mut ctx = RuntimeContext::new();
-        ctx.resolve_and_bind(peris, comps, devs).expect("valid graph resolves");
+        ctx.resolve_and_bind(peris, comps, devs)
+            .expect("valid graph resolves");
         assert_eq!(ctx.resolved_devices.len(), 1);
         let comp_handle = ctx.resolved_devices[0].component_handle;
         assert_eq!(ctx.interner.get("oled1"), Some(comp_handle));
@@ -306,7 +323,10 @@ mod tests {
         let Err(errs) = ctx.resolve_and_bind(&peris, &[], &[]) else {
             panic!("expected pin parse failure");
         };
-        let Some(bad) = errs.iter().find(|e: &&EspfError| e.title == "invalid pin number") else {
+        let Some(bad) = errs
+            .iter()
+            .find(|e: &&EspfError| e.title == "invalid pin number")
+        else {
             panic!("expected invalid pin number error, got {errs:?}");
         };
         assert_eq!(&src[bad.span.start..bad.span.end], "nine");
@@ -323,7 +343,10 @@ mod tests {
         assert_eq!(errs.len(), 2, "one per node: {errs:?}");
         // Each error underlines `<relay` / `<lamp` at its true offset.
         for e in &errs {
-            assert!(src[e.span.start..].starts_with('<'), "span {e:?} not at tag");
+            assert!(
+                src[e.span.start..].starts_with('<'),
+                "span {e:?} not at tag"
+            );
         }
     }
 }

@@ -1220,6 +1220,17 @@ name = "espforge-model"
 version = "0.1.0"
 
 [[package]]
+name = "espforge-options"
+version = "0.1.0"
+dependencies = [
+ "esp-metadata-generated 0.5.3",
+ "espf",
+ "espforge-espgenerate-template",
+ "espforge-model",
+ "kdl",
+]
+
+[[package]]
 name = "espforge-runtime"
 version = "0.1.0"
 dependencies = [
@@ -1917,6 +1928,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "kdl"
+version = "6.7.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "082ddf81b2acd76fe04412655d17befedfff1837db772f8e74c38050d25ed670"
+dependencies = [
+ "miette",
+ "num-traits",
+ "serde",
+ "winnow 0.7.15",
+]
+
+[[package]]
 name = "libc"
 version = "0.2.190"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2012,6 +2035,16 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "488016bfae457b036d996092f6cb448677611ce4449e970ceaf42695203f218a"
 dependencies = [
  "autocfg",
+]
+
+[[package]]
+name = "miette"
+version = "7.6.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5f98efec8807c63c752b5bd61f862c165c115b0a35685bdcfd9238c7aeb592b7"
+dependencies = [
+ "cfg-if",
+ "unicode-width 0.1.14",
 ]
 
 [[package]]

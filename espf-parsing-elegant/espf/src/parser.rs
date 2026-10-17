@@ -1,17 +1,53 @@
-use crate::context::{ParsedNode, TagAttribute};
-use crate::diag::{JunkKind, JunkSpan};
+use crate::context::{AttrOp, ParsedNode, TagAttribute};
+use crate::diag::{EspfError, JunkKind, JunkSpan};
 use std::collections::HashMap;
 use winnow::{
+    ModalResult, Parser,
     ascii::{multispace0, multispace1, till_line_ending},
-    combinator::{dispatch, fail, opt, peek, preceded},
+    combinator::{alt, dispatch, fail, opt, peek, preceded},
     stream::Stream,
     token::{any, take_while},
-    ModalResult, Parser,
 };
+
+/// The five sections every ESPF file must contain (empty sections are valid).
+pub const REQUIRED_SECTIONS: [&str; 5] = [
+    "espforge",
+    "peripherals",
+    "components",
+    "devices",
+    "services",
+];
+
+/// Everything the parser learned about a file.
+pub struct Parsed<'a> {
+    /// Section name -> its elements, in source order. For a duplicated
+    /// section the first definition wins.
+    pub sections: HashMap<String, Vec<ParsedNode<'a>>>,
+    /// Lines the parser could not interpret (see `diag::junk_errors`).
+    pub junk: Vec<JunkSpan>,
+    /// Byte offset of each section's `#` header (first definition).
+    pub header_offsets: HashMap<String, usize>,
+    /// Located structural errors: duplicate and missing sections.
+    pub structure_errors: Vec<EspfError>,
+}
 
 /// Identifier-like token: letters, digits, `_`, `-`.
 fn identifier<'a>(input: &mut &'a str) -> ModalResult<&'a str> {
-    take_while(1.., |c: char| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+    take_while(1.., |c: char| {
+        c.is_ascii_alphanumeric() || c == '_' || c == '-'
+    })
+    .parse_next(input)
+}
+
+/// Attribute key: one or more identifiers joined by `.` (`ssid`, `network1.ssid`,
+/// `a.b.c`). Returns the whole dotted key as one slice. No structure is
+/// checked here; `value::assemble` turns dotted keys into objects.
+fn dotted_key<'a>(input: &mut &'a str) -> ModalResult<&'a str> {
+    (
+        identifier,
+        winnow::combinator::repeat(0.., preceded('.', identifier)).map(|_: Vec<&str>| ()),
+    )
+        .take()
         .parse_next(input)
 }
 
@@ -66,8 +102,7 @@ fn skip_trivia(input: &mut &str) -> ModalResult<()> {
     Ok(())
 }
 
-/// The amount of input `parser` consumed, relative to the start of the file.
-/// Runs the parser on a throwaway reborrow of `input` purely for measurement.
+/// The amount of input consumed so far, relative to the start of the file.
 fn consumed_since(input: &str, original_start: &str) -> usize {
     original_start.len() - input.len()
 }
@@ -84,19 +119,28 @@ fn unquoted_value<'a>(input: &mut &'a str) -> ModalResult<&'a str> {
     take_while(0.., |c: char| c != '"' && c != '\n' && c != '\r').parse_next(input)
 }
 
-/// `key="value"`
+/// `key="value"` or `key+="value"`, where `key` may be dotted.
 ///
-/// Runs in two phases so the value's byte offset into the original file can
-/// be recorded for span-aware diagnostics. Parsing semantics are unchanged:
-/// a missing closing `"` fails the attribute (and thus the line).
+/// Records the byte offsets of both the key and the value in the original
+/// file for span-aware diagnostics. A missing closing `"` fails the attribute
+/// (and thus the line). The parser stays lossless: it reports the raw
+/// (key, op, value) and leaves structural validation to `value::assemble`.
 fn attribute<'a>(input: &mut &'a str, file: &str) -> ModalResult<TagAttribute<'a>> {
-    let key = identifier.parse_next(input)?;
-    let _ = '='.void().parse_next(input)?;
+    let key_offset = consumed_since(input, file);
+    let key = dotted_key.parse_next(input)?;
+    // `+=` must be tried first: `=` alone would leave a stray `+` behind.
+    let op = alt(("+=".value(AttrOp::Append), "=".value(AttrOp::Set))).parse_next(input)?;
     let _ = '"'.void().parse_next(input)?;
     let val_offset = consumed_since(input, file);
     let val = unquoted_value.parse_next(input)?;
     let _ = '"'.void().parse_next(input)?;
-    Ok(TagAttribute { key, val, val_offset })
+    Ok(TagAttribute {
+        key,
+        op,
+        key_offset,
+        val,
+        val_offset,
+    })
 }
 
 /// Self-closing tag: `<tag attr="v" ... />`
@@ -110,19 +154,31 @@ fn parse_node<'a>(input: &mut &'a str, file: &str) -> ModalResult<ParsedNode<'a>
                 let tag_offset = consumed_since(input, file).saturating_sub(1);
                 identifier.parse_next(input).map(|t| (t, tag_offset))
             },
-            winnow::combinator::repeat(0.., preceded(multispace1, move |input: &mut &'a str| attribute(input, file))),
+            winnow::combinator::repeat(
+                0..,
+                preceded(multispace1, move |input: &mut &'a str| {
+                    attribute(input, file)
+                }),
+            ),
             preceded(multispace0, "/>"),
         ),
     )
-    .map(|(tag, attributes, _): ((&str, usize), Vec<TagAttribute>, &str)| {
-        let (tag_name, tag_offset) = tag;
-        let id = attributes
-            .iter()
-            .find(|a| a.key == "id")
-            .map(|a| a.val)
-            .unwrap_or("");
-        ParsedNode { offset: tag_offset, tag_name, id, attributes }
-    })
+    .map(
+        |(tag, attributes, _): ((&str, usize), Vec<TagAttribute>, &str)| {
+            let (tag_name, tag_offset) = tag;
+            let id = attributes
+                .iter()
+                .find(|a| a.key == "id" && a.op == AttrOp::Set)
+                .map(|a| a.val)
+                .unwrap_or("");
+            ParsedNode {
+                offset: tag_offset,
+                tag_name,
+                id,
+                attributes,
+            }
+        },
+    )
     .parse_next(input)
 }
 
@@ -185,9 +241,7 @@ fn section_content<'a>(
                 .find(|c: char| c != ' ' && c != '\t')
                 .unwrap_or(input.len());
             let tail = &input[first_non_blank..];
-            let is_whole_line = tail.is_empty()
-                || tail.starts_with('\r')
-                || tail.starts_with('\n');
+            let is_whole_line = tail.is_empty() || tail.starts_with('\r') || tail.starts_with('\n');
             if is_whole_line {
                 nodes.push(node);
                 continue;
@@ -216,16 +270,14 @@ fn section_content<'a>(
     Ok(nodes)
 }
 
-/// Parse a whole ESPF file, recording junk (malformed) lines as offsets.
-fn parse_impl<'a>(
-    mut input: &'a str,
-    file: &'a str,
-    junk_spans: &mut Vec<JunkSpan>,
-    header_offsets: &mut HashMap<String, usize>,
-) -> HashMap<String, Vec<ParsedNode<'a>>> {
-    skip_trivia.parse_next(&mut input).ok();
-
+/// Parse a whole ESPF file.
+fn parse_impl<'a>(mut input: &'a str, file: &'a str) -> Parsed<'a> {
+    let mut junk_spans = Vec::new();
+    let mut header_offsets: HashMap<String, usize> = HashMap::new();
+    let mut structure_errors = Vec::new();
     let mut sections: HashMap<String, Vec<ParsedNode<'a>>> = HashMap::new();
+
+    skip_trivia.parse_next(&mut input).ok();
 
     while !input.is_empty() {
         skip_trivia.parse_next(&mut input).ok();
@@ -252,13 +304,27 @@ fn parse_impl<'a>(
                 continue;
             }
         };
+        // End of `# name`, for underlining a duplicate header.
+        let header_end = consumed_since(input, file);
 
         skip_trivia.parse_next(&mut input).ok();
 
-        match section_content(&mut input, file, junk_spans) {
+        match section_content(&mut input, file, &mut junk_spans) {
             Ok(nodes) => {
-                header_offsets.insert(section_name.to_string(), header_offset);
-                sections.insert(section_name.to_string(), nodes);
+                if let Some(&first) = header_offsets.get(section_name) {
+                    // Keep the first definition; report the repeat.
+                    structure_errors.push(EspfError {
+                        title: format!("duplicate section `# {section_name}`"),
+                        label: format!(
+                            "`# {section_name}` is already defined on line {}; merge the two sections",
+                            crate::diag::line_number_for_offset(file, first)
+                        ),
+                        span: header_offset..header_end,
+                    });
+                } else {
+                    header_offsets.insert(section_name.to_string(), header_offset);
+                    sections.insert(section_name.to_string(), nodes);
+                }
             }
             Err(_) => {
                 // section_content basically never errors (junk lines are
@@ -269,13 +335,37 @@ fn parse_impl<'a>(
         }
     }
 
-    sections
+    // Every required section must be present. Point at the last section
+    // header seen (or the top of the file when there is none).
+    let anchor = header_offsets.values().copied().max().unwrap_or(0);
+    for name in REQUIRED_SECTIONS {
+        if !sections.contains_key(name) {
+            structure_errors.push(EspfError {
+                title: format!("missing section `# {name}`"),
+                label: format!("every ESPF file needs a `# {name}` section (it may be empty)"),
+                span: anchor..anchor,
+            });
+        }
+    }
+
+    Parsed {
+        sections,
+        junk: junk_spans,
+        header_offsets,
+        structure_errors,
+    }
 }
 
-/// Main parser entry point.
+/// Full parser entry point: sections, junk lines, header offsets and the
+/// structural (duplicate / missing section) errors.
+pub fn parse_espf<'a>(input: &'a str) -> Parsed<'a> {
+    parse_impl(input, input)
+}
+
+/// Compatibility entry point returning `(sections, junk, header_offsets)`.
 ///
-/// Malformed lines are silently skipped (recorded in `junk_spans` if provided)
-/// so the caller decides whether to render an error or proceed.
+/// Does NOT report duplicate or missing sections; use [`parse_espf`] and its
+/// `structure_errors` for that.
 pub fn parse_espf_runtime_with_diagnostics<'a>(
     input: &'a str,
 ) -> (
@@ -283,18 +373,13 @@ pub fn parse_espf_runtime_with_diagnostics<'a>(
     Vec<JunkSpan>,
     HashMap<String, usize>,
 ) {
-    let mut junk_spans = Vec::new();
-    let mut header_offsets = HashMap::new();
-    let sections = parse_impl(input, input, &mut junk_spans, &mut header_offsets);
-    (sections, junk_spans, header_offsets)
+    let p = parse_espf(input);
+    (p.sections, p.junk, p.header_offsets)
 }
 
-/// Backwards-compatible entry point: keeps the original strict-ish behavior of
-/// returning a `ModalResult` and printing nothing, skipping junk lines.
-pub fn parse_espf_runtime<'a>(
-    input: &'a str,
-) -> HashMap<String, Vec<ParsedNode<'a>>> {
-    parse_espf_runtime_with_diagnostics(input).0
+/// Backwards-compatible entry point: skips junk lines silently.
+pub fn parse_espf_runtime<'a>(input: &'a str) -> HashMap<String, Vec<ParsedNode<'a>>> {
+    parse_espf(input).sections
 }
 
 #[cfg(test)]
@@ -317,7 +402,7 @@ mod tests {
 
 # components
   <i2c_component  id="temp_bus"    i2c="$i2c0" address="0x48" />
-  <spi_component  id="display_bus" spi="$spi2" mode="0" cs="gpio5" frequency="40MHz" />
+  <spi_component  id="display_bus" spi="$spi2" mode="0" cs="$gpio5" frequency="40MHz" />
 
 # devices
   <tmp102         id="outdoor_temp" i2c_component="$temp_bus" />
@@ -424,8 +509,7 @@ mod tests {
     /// the rest of the section still parse.
     #[test]
     fn no_comment_after_section_heading() {
-        let input =
-            "# peripherals --- note\n  <spi id=\"spi2\" sclk=\"6\" mosi=\"7\" />\n";
+        let input = "# peripherals --- note\n  <spi id=\"spi2\" sclk=\"6\" mosi=\"7\" />\n";
 
         let (sections, junk, _) = parse_espf_runtime_with_diagnostics(input);
 
@@ -469,5 +553,122 @@ mod tests {
         let (_sections, junk, _) = parse_espf_runtime_with_diagnostics(input);
         assert_eq!(junk.len(), 1);
         assert_eq!(junk[0].offset, "# peripherals\n".len());
+    }
+
+    // ---- ESPF v2 syntax --------------------------------------------------
+
+    /// Dot-segment keys parse as one key, with its offset recorded.
+    #[test]
+    fn dotted_keys_parse() {
+        let input = "# services\n  <wifi id=\"w\" a.b.c=\"x\" network1.ssid=\"home\" />\n";
+        let (sections, junk, _) = parse_espf_runtime_with_diagnostics(input);
+        assert!(junk.is_empty(), "{junk:?}");
+        let attrs = &sections["services"][0].attributes;
+        assert_eq!(attrs.len(), 3);
+        assert_eq!(attrs[1].key, "a.b.c");
+        assert_eq!(attrs[1].val, "x");
+        assert_eq!(attrs[1].key_offset, input.find("a.b.c").unwrap());
+        assert_eq!(attrs[2].key, "network1.ssid");
+        // Single-segment keys still work and keep their offsets.
+        assert_eq!(attrs[0].key, "id");
+        assert_eq!(attrs[0].key_offset, input.find("id=").unwrap());
+    }
+
+    /// A dangling or doubled dot is not a key.
+    #[test]
+    fn malformed_dotted_keys_are_junk() {
+        for bad in ["a.=\"x\"", ".a=\"x\"", "a..b=\"x\""] {
+            let input = format!("# services\n  <t {bad} />\n");
+            let (sections, junk, _) = parse_espf_runtime_with_diagnostics(&input);
+            assert_eq!(junk.len(), 1, "{bad} should be junk");
+            assert!(sections["services"].is_empty());
+        }
+    }
+
+    /// `=` is Set, `+=` is Append; offsets point at key and value.
+    #[test]
+    fn set_and_append_operators_parse() {
+        let input = "# services\n  <ntp id=\"n\" servers+=\"a.org\" servers+=\"b.org\" />\n";
+        let (sections, junk, _) = parse_espf_runtime_with_diagnostics(input);
+        assert!(junk.is_empty(), "{junk:?}");
+        let attrs = &sections["services"][0].attributes;
+        assert_eq!(attrs[0].op, AttrOp::Set);
+        assert_eq!(attrs[1].op, AttrOp::Append);
+        assert_eq!(attrs[1].key, "servers");
+        assert_eq!(attrs[1].val, "a.org");
+        assert_eq!(&input[attrs[1].val_offset..][..5], "a.org");
+        assert_eq!(attrs[2].op, AttrOp::Append);
+        assert_eq!(attrs[2].val, "b.org");
+        // The `id` lookup only honours `=`.
+        assert_eq!(sections["services"][0].id, "n");
+    }
+
+    #[test]
+    fn append_works_on_dotted_keys() {
+        let input = "# services\n  <t a.b+=\"x\" />\n";
+        let (sections, junk, _) = parse_espf_runtime_with_diagnostics(input);
+        assert!(junk.is_empty());
+        let a = &sections["services"][0].attributes[0];
+        assert_eq!((a.key, a.op), ("a.b", AttrOp::Append));
+    }
+
+    const ALL_FIVE: &str = "# espforge\n# peripherals\n# components\n# devices\n# services\n";
+
+    #[test]
+    fn all_five_sections_present_is_clean() {
+        let p = parse_espf(ALL_FIVE);
+        assert!(p.structure_errors.is_empty(), "{:?}", p.structure_errors);
+        assert!(p.junk.is_empty());
+        assert!(
+            p.sections["services"].is_empty(),
+            "empty sections are valid"
+        );
+    }
+
+    #[test]
+    fn duplicate_section_is_located_and_first_wins() {
+        let src = "# espforge\n# peripherals\n  <gpio id=\"a\" pin=\"1\" />\n# components\n# devices\n# services\n# peripherals\n  <gpio id=\"b\" pin=\"2\" />\n";
+        let p = parse_espf(src);
+        assert_eq!(p.structure_errors.len(), 1, "{:?}", p.structure_errors);
+        let e = &p.structure_errors[0];
+        assert!(e.title.contains("duplicate section"));
+        assert_eq!(&src[e.span.clone()], "# peripherals");
+        // The *second* header is the one underlined.
+        assert_eq!(e.span.start, src.rfind("# peripherals").unwrap());
+        assert!(e.label.contains("line 2"), "{}", e.label);
+        // First definition wins.
+        assert_eq!(p.sections["peripherals"][0].id, "a");
+    }
+
+    #[test]
+    fn missing_sections_point_at_last_header() {
+        let src = "# espforge\n# peripherals\n";
+        let p = parse_espf(src);
+        let titles: Vec<&str> = p
+            .structure_errors
+            .iter()
+            .map(|e| e.title.as_str())
+            .collect();
+        assert_eq!(
+            titles,
+            [
+                "missing section `# components`",
+                "missing section `# devices`",
+                "missing section `# services`"
+            ]
+        );
+        let last_header = src.find("# peripherals").unwrap();
+        assert!(
+            p.structure_errors
+                .iter()
+                .all(|e| e.span.start == last_header)
+        );
+    }
+
+    #[test]
+    fn empty_file_reports_all_five_missing_at_top() {
+        let p = parse_espf("");
+        assert_eq!(p.structure_errors.len(), 5);
+        assert!(p.structure_errors.iter().all(|e| e.span == (0..0)));
     }
 }

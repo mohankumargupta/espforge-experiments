@@ -51,8 +51,21 @@ pub struct EspfError {
 }
 
 impl EspfError {
+    /// An error with an explicit byte span.
+    pub fn at_span(span: Range<usize>, title: impl Into<String>, label: impl Into<String>) -> Self {
+        Self {
+            title: title.into(),
+            label: label.into(),
+            span,
+        }
+    }
+
     /// An error pointing at a parsed node's tag (`<tagname`).
-    pub fn at_node(node: &crate::context::ParsedNode, title: impl Into<String>, label: impl Into<String>) -> Self {
+    pub fn at_node(
+        node: &crate::context::ParsedNode,
+        title: impl Into<String>,
+        label: impl Into<String>,
+    ) -> Self {
         let start = node.offset;
         Self {
             title: title.into(),
@@ -62,12 +75,30 @@ impl EspfError {
     }
 
     /// An error pointing at an attribute's value (`key="<value>"`).
-    pub fn at_attr(attr: &crate::context::TagAttribute, title: impl Into<String>, label: impl Into<String>) -> Self {
+    pub fn at_attr(
+        attr: &crate::context::TagAttribute,
+        title: impl Into<String>,
+        label: impl Into<String>,
+    ) -> Self {
         let start = attr.val_offset;
         Self {
             title: title.into(),
             label: label.into(),
             span: start..start + attr.val.len(),
+        }
+    }
+
+    /// An error pointing at an attribute's key (`<key>="value"`).
+    pub fn at_key(
+        attr: &crate::context::TagAttribute,
+        title: impl Into<String>,
+        label: impl Into<String>,
+    ) -> Self {
+        let start = attr.key_offset;
+        Self {
+            title: title.into(),
+            label: label.into(),
+            span: start..start + attr.key.len(),
         }
     }
 }
@@ -82,7 +113,10 @@ pub fn node_span(node: &crate::context::ParsedNode) -> Range<usize> {
 /// Line-start byte offsets of every line in `src` (0-indexed line numbers).
 fn line_start_offsets(src: &str) -> Vec<usize> {
     std::iter::once(0)
-        .chain(src.char_indices().filter_map(|(i, c)| (c == '\n').then_some(i + 1)))
+        .chain(
+            src.char_indices()
+                .filter_map(|(i, c)| (c == '\n').then_some(i + 1)),
+        )
         .collect()
 }
 
@@ -217,11 +251,21 @@ mod tests {
         let at = "# peripherals\n".len();
         let attr = crate::context::TagAttribute {
             key: "pin",
+            op: crate::context::AttrOp::Set,
+            key_offset: at + 19,
             val: "notanumber",
             val_offset: at + 22,
         };
-        let e = EspfError::at_attr(&attr, "invalid pin number", format!("`{}` is not a 0-255 number", attr.val));
-        let out = render_errors("x.espf", "# peripherals\n  <gpio id=\"gpio4\" pin=\"notanumber\" />\n", &[e]);
+        let e = EspfError::at_attr(
+            &attr,
+            "invalid pin number",
+            format!("`{}` is not a 0-255 number", attr.val),
+        );
+        let out = render_errors(
+            "x.espf",
+            "# peripherals\n  <gpio id=\"gpio4\" pin=\"notanumber\" />\n",
+            &[e],
+        );
         eprintln!("{out}");
         assert!(out.contains("invalid pin number"));
         assert!(out.contains("notanumber"));
@@ -230,8 +274,16 @@ mod tests {
     #[test]
     fn each_error_is_its_own_group() {
         let junk = vec![
-            JunkSpan { offset: 0, line: 1, kind: JunkKind::SectionHeader },
-            JunkSpan { offset: 5, line: 1, kind: JunkKind::NodeLine },
+            JunkSpan {
+                offset: 0,
+                line: 1,
+                kind: JunkKind::SectionHeader,
+            },
+            JunkSpan {
+                offset: 5,
+                line: 1,
+                kind: JunkKind::NodeLine,
+            },
         ];
         let errors = junk_errors(&junk);
         let src = "a b\n";
