@@ -3,6 +3,13 @@ export JUST_CHOOSER := "fzf --height=40% --tac --layout=reverse --border"
 default:
   @just --list
 
+espforge dir="/tmp/helloworlddemo":
+  #!/usr/bin/env bash
+  rm -rf {{ dir }}
+  cargo run -- examples
+  cd {{ dir }}
+  
+
 version:
   uvx --with=pip esphome version
 

@@ -1,0 +1,241 @@
+[package]
+name = "{{ project_name }}"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.95"
+
+[[bin]]
+name = "{{ project_name }}"
+path = "./src/bin/main.rs"
+{% if self["embedded-test"] %}
+test = false
+
+[[test]]
+name    = "hello_test"
+harness = false
+
+[lib]
+test = false
+{% endif %}
+
+[dependencies]
+esp-hal = { version = "~1.2.2", features = [
+    "{{ chip.name }}",
+    {% if self["unstable-hal"] %}
+    "unstable",
+    {% endif %}
+    {% if defmt %}
+    "defmt",
+    {% endif %}
+    {% if log %}
+    "log-04",
+    {% endif %}
+] }
+
+{% if embassy or wifi or self["ble-trouble"] %}
+esp-rtos = { version = "0.4.0", features = [
+    {% if wifi or self["ble-trouble"] %}
+    "esp-radio",
+    {% endif %}
+    {% if alloc %}
+    "esp-alloc",
+    {% endif %}
+    {% if embassy %}
+    "embassy",
+    {% endif %}
+    "{{ chip.name }}",
+    {% if defmt %}
+    "defmt",
+    {% endif %}
+    {% if log %}
+    "log-04",
+    {% endif %}
+]}
+{% endif %}
+
+esp-bootloader-esp-idf = { version = "0.6.0", features = [
+    {% if defmt %}
+    "defmt",
+    {% endif %}
+    {% if log %}
+    "log-04",
+    {% endif %}
+    "{{ chip.name }}",
+] }
+{% if defmt %}
+defmt = "1.0.1"
+{% elif log %}
+log = "0.4.27"
+{% endif %}
+
+{% if self["log-frontend"] or self["panic-handler"] or self["probe-rs"] %}
+{% if self["probe-rs"] %}
+{% if defmt %}
+rtt-target = { version = "0.6.2", features = ["defmt"] }
+{% else %}
+rtt-target = "0.6.2"
+{% endif %}
+{% else %}
+esp-println = { version = "0.18.0", features = [
+    "{{ chip.name }}",
+    {% if defmt %}
+    "defmt-espflash",
+    {% endif %}
+    {% if log %}
+    "log-04",
+    {% endif %}
+] }
+{% endif %}
+{% endif %}
+{% if self["esp-backtrace"] %}
+esp-backtrace = { version = "0.20.0", features = [
+    "{{ chip.name }}",
+    "panic-handler",
+    {% if defmt %}
+    "defmt",
+    {% else %}
+    "println",
+    {% endif %}
+] }
+{% elif self["panic-rtt-target"] %}
+{% if defmt %}
+panic-rtt-target = { version = "0.2.0", features = ["defmt"] }
+{% else %}
+panic-rtt-target = "0.2.0"
+{% endif %}
+{% endif %}
+{% if alloc %}
+{% if defmt %}
+esp-alloc = { version = "0.11.0", features = ["{{ chip.name }}", "defmt"] }
+{% else %}
+esp-alloc = { version = "0.11.0", features = ["{{ chip.name }}"] }
+{% endif %}
+{% endif %}
+{% if wifi or self["ble-trouble"] %}
+{% if defmt %}
+embedded-io = { version = "0.7.1", features = ["defmt"] }
+{% else %}
+embedded-io = "0.7.1"
+{% endif %}
+{% if embassy %}
+{% if defmt %}
+embedded-io-async = { version = "0.7.0", features = ["defmt"] }
+{% else %}
+embedded-io-async = "0.7.0"
+{% endif %}
+{% if wifi %}
+embassy-net = { version = "0.9.1", features = [
+    "tcp",
+    "udp",
+    "dhcpv4",
+    "medium-ethernet",
+    {% if defmt %}
+    "defmt",
+    {% endif %}
+    {% if log %}
+    "log",
+    {% endif %}
+] }
+# for more networking protocol support see https://crates.io/crates/edge-net
+{% endif %}
+{% endif %}
+{% if wifi %}
+smoltcp = { version = "0.14.0", default-features = false, features = [
+    "medium-ethernet",
+    "multicast",
+    "proto-dhcpv4",
+    "proto-dns",
+    "proto-ipv4",
+    "socket-dns",
+    "socket-raw",
+    "socket-tcp",
+    "socket-udp",
+    "socket-icmp",
+    {% if defmt %}
+    "defmt",
+    {% endif %}
+    {% if log %}
+    "log",
+    {% endif %}
+] }
+{% endif %}
+esp-radio = { version = "1.0.0-beta.1", features = [
+    "{{ chip.name }}",
+    {% if wifi %}
+    "wifi",
+    {% endif %}
+    {% if self["ble-trouble"] %}
+    "ble",
+    {% endif %}
+    {% if wifi and self["ble-trouble"] %}
+    "coex",
+    {% endif %}
+    {% if alloc %}
+    "esp-alloc",
+    {% endif %}
+    "unstable",
+    {% if defmt %}
+    "defmt",
+    {% endif %}
+    {% if log %}
+    "log-04",
+    {% endif %}
+] }
+{% if self["ble-trouble"] %}
+trouble-host = { version = "0.7.0", features = ["gatt"] }
+bt-hci = "0.9.0"
+{% endif %}
+{% endif %}
+{% if embassy %}
+embassy-executor = { version = "0.10.0", features = [
+    {% if defmt %}
+    "defmt",
+    {% endif %}
+    {% if log %}
+    "log",
+    {% endif %}
+] }
+{% if defmt %}
+embassy-time     = { version = "0.5.0", features = ["defmt"] }
+{% endif %}
+{% if log %}
+embassy-time = { version = "0.5.0", features = ["log"] }
+{% endif %}
+{% if not defmt and not log %}
+embassy-time     = "0.5.0"
+{% endif %}
+
+static_cell = "2.1.1"
+{% endif %}
+critical-section = "1.2.0"
+
+{% if self["embedded-test"] %}
+[dev-dependencies]
+embedded-test = { version = "0.7.1", features = [
+    {% if chip.xtensa %}
+    "xtensa-semihosting",
+    {% endif %}
+    {% if embassy %}
+    "embassy-010",
+    "external-executor",
+    {% endif %}
+    {% if defmt %}
+    "defmt",
+    {% endif %}
+    {% if log %}
+    "log-04",
+    {% endif %}
+] }
+{% endif %}
+
+# For fine tuning these settings, please refer to https://doc.rust-lang.org/cargo/reference/profiles.html
+[profile.dev]
+# The default debug profile is too slow and too big for resource-constrained devices.
+# Always build with some optimizations enabled.
+opt-level = "s"
+
+[profile.release]
+codegen-units = 1       # LLVM can perform better optimizations using a single thread
+debug = 2               # prefer slower builds but better debugging experience
+lto = 'fat'
+opt-level = 's'
