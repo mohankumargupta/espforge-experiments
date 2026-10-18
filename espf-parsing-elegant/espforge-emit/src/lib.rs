@@ -10,7 +10,7 @@ pub mod rust;
 pub mod scaffold;
 
 use anyhow::{Context, Result, bail};
-use espforge_model::{Artifact, Ownership, Project};
+use espforge_model::{Artifact, Asset, Ownership, Project};
 use std::collections::BTreeMap;
 use std::fs;
 use std::path::Path;
@@ -71,6 +71,24 @@ pub fn write(out_dir: &Path, artifacts: &[Artifact]) -> Result<()> {
     Ok(())
 }
 
+/// Write binary assets into `out_dir`: `SeedOnce` only if absent, `Owned`
+/// always overwritten (assets are not drift-tracked), `NotOwned` never.
+pub fn write_assets(out_dir: &Path, assets: &[Asset]) -> Result<()> {
+    for a in assets {
+        let path = out_dir.join(&a.path);
+        match a.ownership {
+            Ownership::NotOwned => continue,
+            Ownership::SeedOnce if path.exists() => continue,
+            _ => {}
+        }
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent)?;
+        }
+        fs::write(&path, &a.bytes)?;
+    }
+    Ok(())
+}
+
 fn read_prev_manifest(out_dir: &Path) -> Result<BTreeMap<String, String>> {
     let p = out_dir.join(".espforge/manifest.json");
     match fs::read_to_string(&p) {
@@ -113,6 +131,16 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         write(dir.path(), &artifacts()).unwrap();
         write(dir.path(), &artifacts()).unwrap();
+    }
+
+    #[test]
+    fn assets_follow_ownership() {
+        let dir = tempfile::tempdir().unwrap();
+        let seed = Asset::seed_once("chip.wasm", vec![0, 97, 115, 109]);
+        write_assets(dir.path(), std::slice::from_ref(&seed)).unwrap();
+        fs::write(dir.path().join("chip.wasm"), b"mine").unwrap();
+        write_assets(dir.path(), std::slice::from_ref(&seed)).unwrap();
+        assert_eq!(fs::read(dir.path().join("chip.wasm")).unwrap(), b"mine");
     }
 
     #[test]

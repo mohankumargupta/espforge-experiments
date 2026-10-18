@@ -153,7 +153,10 @@ mod tests {
         assert_eq!(get(&c, "runtime").as_str(), Some("blocking"));
         assert!(!get(&c, "embassy").is_true());
         assert!(get(&c, "log").is_true());
-        assert!(!get(&c, "opt.alloc").is_true());
+        // alloc and unstable-hal are on by default (what espforge always asked esp-generate for)
+        assert!(get(&c, "opt.alloc").is_true());
+        assert!(get(&c, "opt.unstable-hal").is_true());
+        assert!(!get(&c, "opt.keep-zig-source").is_true());
     }
 
     #[test]

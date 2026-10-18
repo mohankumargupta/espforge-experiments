@@ -2,10 +2,8 @@
 include = ["esp-config.toml"]
 
 [target.{{ chip.rust_target }}]
-{% if self["probe-rs"] %}
+{% if opt["probe-rs"] %}
 runner = "probe-rs run --chip={{ chip.name }} --preverify --always-print-stacktrace --no-location"
-{% elif defmt %}
-runner = "espflash flash --monitor --chip {{ chip.name }} --log-format defmt"
 {% else %}
 runner = "espflash flash --monitor --chip {{ chip.name }}"
 {% endif %}
@@ -19,7 +17,7 @@ rustflags = [
   # NOTE: May negatively impact performance of produced code
   "-C", "force-frame-pointers",
 {% endif %}
-{% if self["stack-smashing-protection"] %}
+{% if opt["stack-smashing-protection"] %}
   "-Z", "stack-protector=all",
 {% endif %}
 ]
@@ -27,9 +25,8 @@ rustflags = [
 target = "{{ chip.rust_target }}"
 
 [unstable]
-{% if alloc %}
+{% if opt.alloc %}
 build-std = ["alloc", "core"]
 {% else %}
 build-std = ["core"]
 {% endif %}
-

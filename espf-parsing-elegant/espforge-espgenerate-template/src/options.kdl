@@ -3,11 +3,11 @@ required "chip"
 
 // Options container
 options {
-    option "unstable-hal" display_name="Enable unstable HAL features." {
+    option "unstable-hal" display_name="Enable unstable HAL features." default=#true {
         help "This configuration enables unstable esp-hal features. These come with no stability guarantees, and could be changed or removed at any time."
     }
 
-    option "alloc" display_name="Enable allocations via the esp-alloc crate." {
+    option "alloc" display_name="Enable allocations via the esp-alloc crate." default=#true {
         help "esp-alloc comes with no stability guarantees at this time."
     }
 
@@ -45,5 +45,11 @@ options {
     option "wokwi" display_name="Generate Wokwi simulation files." default=#true {
         help "Writes diagram.json and wokwi.toml so the project can be simulated in Wokwi."
     }
+
+    // Examples with a custom Wokwi chip ship its Zig sources next to the
+    // prebuilt chip.json / chip.wasm (which are always copied).
+    option "keep-zig-source" display_name="Keep the Zig source of custom Wokwi chips." {
+        help "Copies the example's chip/ directory (Zig sources and build files) into the project. chip.json and chip.wasm are always copied."
+    }
 }
- 
+
