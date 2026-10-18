@@ -40,5 +40,10 @@ options {
         requires_tools "probe-rs"
         help "probe-rs is a debugger that connects"
     }
-}
 
+    // Emit the Wokwi simulation files (diagram.json, wokwi.toml).
+    option "wokwi" display_name="Generate Wokwi simulation files." default=#true {
+        help "Writes diagram.json and wokwi.toml so the project can be simulated in Wokwi."
+    }
+}
+ 

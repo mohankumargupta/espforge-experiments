@@ -3,7 +3,9 @@
 //! and `write` touch the filesystem.
 //! Host-only: never depend on `espforge-runtime` from this crate.
 
+pub mod context;
 pub mod manifest;
+pub mod render;
 pub mod rust;
 pub mod scaffold;
 
