@@ -253,7 +253,7 @@ fn cargo_build(out: &Path) -> Result<(), Failure> {
 
 // ------------------------------------------------------------------ pipeline
 
-fn execute(args: &BuildArgs) -> Result<(), Failure> {
+pub fn execute(args: &BuildArgs) -> Result<(), Failure> {
     if args.stage == Stage::Compile {
         return cargo_build(&args.out);
     }

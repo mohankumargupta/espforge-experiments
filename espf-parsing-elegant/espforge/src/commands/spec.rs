@@ -1,5 +1,6 @@
-//! `--write-spec`: the effective `.espf` after flag overrides, in canonical
-//! form (via `espf::writer`), so it round-trips.
+//! Writing ESPF: the effective spec for `build --write-spec`, and a fresh
+//! spec for `new`. Both go through `espf::writer`, so output is canonical
+//! and round-trips.
 
 use espf::context::ParsedNode;
 use espf::diag::EspfError;
@@ -43,15 +44,9 @@ fn opt_value(v: &OptValue) -> Value {
     }
 }
 
-/// The document with `# espforge` rebuilt from the final core settings and
-/// explicit option answers; the other sections are carried over unchanged.
-pub fn effective_document(
-    sections: &HashMap<String, Vec<ParsedNode>>,
-    meta: &Meta,
-    answers: &Answers,
-) -> Result<Document, Vec<EspfError>> {
-    let mut doc = Document::from_sections(sections)?;
-
+/// The `# espforge` section for the final core settings and explicit option
+/// answers: project, chip, runtime, console, options.
+fn espforge_elements(meta: &Meta, answers: &Answers) -> Vec<Element> {
     let mut project = vec![("name", s(&meta.name))];
     if let Some(d) = &meta.description {
         project.push(("description", s(d)));
@@ -63,36 +58,55 @@ pub fn effective_document(
     for (name, a) in &answers.values {
         options.push((name.as_str(), opt_value(&a.value)));
     }
+    vec![
+        element("project", project),
+        element("chip", vec![("type", s(&meta.chip))]),
+        element(
+            "runtime",
+            vec![(
+                "type",
+                s(match meta.runtime {
+                    Runtime::Blocking => "blocking",
+                    Runtime::Embassy => "embassy",
+                }),
+            )],
+        ),
+        element(
+            "console",
+            vec![(
+                "type",
+                s(match meta.console {
+                    Console::Uart => "uart",
+                    Console::JtagSerial => "jtag-serial",
+                }),
+            )],
+        ),
+        element("options", options),
+    ]
+}
 
-    doc.sections.insert(
-        "espforge".to_string(),
-        vec![
-            element("project", project),
-            element("chip", vec![("type", s(&meta.chip))]),
-            element(
-                "runtime",
-                vec![(
-                    "type",
-                    s(match meta.runtime {
-                        Runtime::Blocking => "blocking",
-                        Runtime::Embassy => "embassy",
-                    }),
-                )],
-            ),
-            element(
-                "console",
-                vec![(
-                    "type",
-                    s(match meta.console {
-                        Console::Uart => "uart",
-                        Console::JtagSerial => "jtag-serial",
-                    }),
-                )],
-            ),
-            element("options", options),
-        ],
-    );
+/// The parsed document with `# espforge` rebuilt from the final settings; the
+/// other sections are carried over unchanged.
+pub fn effective_document(
+    sections: &HashMap<String, Vec<ParsedNode>>,
+    meta: &Meta,
+    answers: &Answers,
+) -> Result<Document, Vec<EspfError>> {
+    let mut doc = Document::from_sections(sections)?;
+    doc.sections
+        .insert("espforge".to_string(), espforge_elements(meta, answers));
     Ok(doc)
+}
+
+/// A brand-new document: the `# espforge` section and four empty sections.
+pub fn blank_document(meta: &Meta, answers: &Answers) -> Document {
+    let mut doc = Document::default();
+    doc.sections
+        .insert("espforge".to_string(), espforge_elements(meta, answers));
+    for name in ["peripherals", "components", "devices", "services"] {
+        doc.sections.insert(name.to_string(), Vec::new());
+    }
+    doc
 }
 
 pub fn render(doc: &Document) -> Result<String, WriteError> {
@@ -149,5 +163,21 @@ mod tests {
         assert_eq!(Document::from_sections(&again.sections).unwrap(), doc);
         // and the spec is itself loadable by the front end
         assert!(crate::commands::frontend::load(&text).is_ok(), "{text}");
+    }
+
+    #[test]
+    fn blank_document_is_a_loadable_empty_project() {
+        let mut answers = Answers::empty(0..0);
+        answers
+            .apply_flag(espforge_options::embedded_schema(), "wokwi", "false")
+            .unwrap();
+        let text = render(&blank_document(&meta(), &answers)).unwrap();
+        let fe = crate::commands::frontend::load(&text).unwrap_or_else(|_| panic!("{text}"));
+        assert_eq!(fe.meta.chip, "esp32s3");
+        assert!(fe.answers.defaults);
+        assert!(fe.answers.values.contains_key("wokwi"));
+        for name in ["peripherals", "components", "devices", "services"] {
+            assert!(fe.parsed.sections[name].is_empty());
+        }
     }
 }

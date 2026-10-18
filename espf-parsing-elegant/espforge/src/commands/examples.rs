@@ -5,20 +5,26 @@
 //! without examples are never offered), then an `Input` prompt for the
 //! destination folder pre-filled with the example's own directory name — Enter
 //! accepts it, the user may retype it. The chosen example is materialized to
-//! that folder and the full pipeline is printed as next steps (edit the
-//! example, then `espforge build`).
+//! that folder verbatim. Then the one question that matters by default: which
+//! chip (Enter keeps the example's; a different one is rewritten into the
+//! copied `.espf`). Finally "Generate the project now?" (default No) runs
+//! `build --stage generate` on the folder. It never builds silently, and it
+//! always prints the `next:` line.
 //!
 //! The subcommands `list` / `get` are the plumbing surface from `cli.md`:
 //! non-interactive, plain output, they only delegate to `espforge_examples`.
 //! Porcelain never duplicates plumbing logic: picking, defaults and printed
 //! next-steps live here; copying lives in `espforge_examples::materialize`.
 use std::io;
+use std::ops::Range;
 use std::path::Path;
 
 use anyhow::Context;
 
-use cliclack::{Input, Select, intro, outro, outro_cancel};
+use cliclack::{Input, Select, confirm, intro, log, outro, outro_cancel};
 use espforge_examples::{Category, Example};
+
+use super::build::{self, BuildArgs, Failure, Stage};
 
 /// Name of the ESPF source file inside each example directory.
 const EXAMPLE_FILE: &str = "example.espf.txt";
@@ -65,12 +71,9 @@ fn run_ui() -> io::Result<()> {
         .enumerate()
         .map(|(i, example)| (i, example.name.clone(), example_hint(example)))
         .collect();
-    let example_index = Select::<usize>::new(format!(
-        "Select an example in {}",
-        category.name
-    ))
-    .items(&entries)
-    .interact()?;
+    let example_index = Select::<usize>::new(format!("Select an example in {}", category.name))
+        .items(&entries)
+        .interact()?;
     let example = &category.examples[example_index];
 
     // Destination prompt: pre-filled with the example's own directory name;
@@ -92,21 +95,117 @@ fn run_ui() -> io::Result<()> {
             std::process::exit(2);
         }
     };
-
-    // The full pipeline (cli.md): stage 1 done here, stages 2+3 are the
-    // user's edits followed by `build` — in build's `next:` style.
-    outro(format!(
+    log::success(format!(
         "Copied {}/{} to {} ({} files)",
         category.name,
         example.name,
         dest,
         written.len()
     ))?;
-    println!(
-        "  next: cd {dest} → edit the example → espforge build {dest}/{EXAMPLE_FILE}"
-    );
+
+    let espf_path = Path::new(&dest).join(EXAMPLE_FILE);
+
+    // The only question asked by default: which chip.
+    choose_chip(&espf_path)?;
+
+    // Never builds silently: the default answer is No.
+    let generate = confirm("Generate the project now?")
+        .initial_value(false)
+        .interact()?;
+    let mut generated = false;
+    if generate {
+        let out = Path::new(&dest).join("build");
+        match build::execute(&BuildArgs {
+            file: Some(espf_path.clone()),
+            out,
+            stage: Stage::Generate,
+            ..Default::default()
+        }) {
+            Ok(()) => generated = true,
+            // The reason (diagnostics) was already printed by `build`.
+            Err(Failure::User) => {
+                let _ = log::warning("The project was not generated; fix the problems above.");
+            }
+            Err(Failure::Internal(e)) => {
+                let _ = log::error(format!("{e:#}"));
+            }
+        }
+    }
+
+    outro(format!("Example ready in {dest}"))?;
+    if generated {
+        println!("  next: cd {dest}/build && cargo build");
+    } else {
+        println!("  next: cd {dest} → edit the example → espforge build {dest}/{EXAMPLE_FILE}");
+    }
 
     Ok(())
+}
+
+/// Ask for the chip (Enter keeps the example's) and rewrite the copied `.espf`
+/// when it changes.
+fn choose_chip(espf_path: &Path) -> io::Result<()> {
+    let text = std::fs::read_to_string(espf_path)?;
+    let Some((_, current)) = chip_value(&text) else {
+        return Ok(());
+    };
+
+    let chips = espforge_options::chips::offered_chips();
+    let entries: Vec<(usize, String, String)> = chips
+        .iter()
+        .enumerate()
+        .map(|(i, c)| {
+            let hint = if *c == current {
+                "this example's chip"
+            } else {
+                ""
+            };
+            (i, c.to_string(), hint.to_string())
+        })
+        .collect();
+    let initial = chips.iter().position(|c| *c == current).unwrap_or(0);
+    let picked = Select::<usize>::new("Chip")
+        .items(&entries)
+        .initial_value(initial)
+        .interact()?;
+    let chip = chips[picked];
+
+    if chip != current {
+        if let Some(new_text) = set_chip(&text, chip) {
+            std::fs::write(espf_path, new_text)?;
+            log::warning(format!(
+                "Changed the chip to {chip}. Pin numbers in this example were written for {current}; check them for {chip}."
+            ))?;
+        }
+    }
+    Ok(())
+}
+
+/// Span and text of `<chip type="...">`'s value in an ESPF source.
+fn chip_value(src: &str) -> Option<(Range<usize>, String)> {
+    let parsed = espf::parser::parse_espf(src);
+    let node = parsed
+        .sections
+        .get("espforge")?
+        .iter()
+        .find(|n| n.tag_name == "chip")?;
+    let attr = node.get_attr_spanned("type")?;
+    Some((
+        attr.val_offset..attr.val_offset + attr.val.len(),
+        attr.val.to_string(),
+    ))
+}
+
+/// Replace the chip type in an ESPF source, leaving everything else
+/// (comments, layout) untouched.
+pub fn set_chip(src: &str, chip: &str) -> Option<String> {
+    let (span, _) = chip_value(src)?;
+    Some(format!(
+        "{}{}{}",
+        &src[..span.start],
+        chip,
+        &src[span.end..]
+    ))
 }
 
 /// `examples list [category]`: plain `category/name<TAB>title` lines.
@@ -123,10 +222,9 @@ pub fn run_list(category: Option<&str>) -> anyhow::Result<()> {
 /// `examples get <category>/<name> --out <dir>`: materialize the embedded
 /// example tree at the user-chosen destination.
 pub fn run_get(example_path: &str, out: &Path) -> anyhow::Result<()> {
-    let example = espforge_examples::find(example_path)
-        .context(format!(
-            "no example at '{example_path}'; run `espforge examples list` to see what is available"
-        ))?;
+    let example = espforge_examples::find(example_path).context(format!(
+        "no example at '{example_path}'; run `espforge examples list` to see what is available"
+    ))?;
     let written = espforge_examples::materialize(example, out)
         .with_context(|| format!("failed to copy '{example_path}' into {}", out.display()))?;
     for path in written {
@@ -151,4 +249,77 @@ fn category_hint(category: &Category) -> String {
         "examples"
     };
     format!("{} {noun}", category.examples.len())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn hello() -> &'static str {
+        &espforge_examples::find("01.Basics/helloworld")
+            .expect("helloworld example")
+            .content
+    }
+
+    #[test]
+    fn chip_value_finds_the_chip_type() {
+        let (span, chip) = chip_value(hello()).unwrap();
+        assert_eq!(chip, "esp32c3");
+        assert_eq!(&hello()[span], "esp32c3");
+    }
+
+    #[test]
+    fn set_chip_rewrites_only_the_chip() {
+        let src = hello();
+        let out = set_chip(src, "esp32s3").unwrap();
+        assert!(out.contains("<chip type=\"esp32s3\" />"));
+        assert_eq!(
+            out.replace("esp32s3", "esp32c3"),
+            src,
+            "nothing else may change"
+        );
+        // the result is still a valid file
+        assert!(super::super::frontend::load(&out).is_ok());
+    }
+
+    #[test]
+    fn set_chip_is_none_without_a_chip() {
+        assert!(set_chip("# espforge\n", "esp32c3").is_none());
+    }
+
+    #[test]
+    fn every_embedded_example_has_a_chip_to_rewrite() {
+        for category in espforge_examples::categories() {
+            for ex in &category.examples {
+                assert!(
+                    chip_value(&ex.content).is_some(),
+                    "{}/{}",
+                    category.name,
+                    ex.name
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn the_materialized_example_builds_after_a_chip_change() {
+        // examples -> edit -> build, chained by hand: the contract of cli.md.
+        let tmp = tempfile::tempdir().unwrap();
+        let ex = espforge_examples::find("01.Basics/helloworld").unwrap();
+        let dest = tmp.path().join("hw");
+        espforge_examples::materialize(ex, &dest).unwrap();
+        let espf = dest.join(EXAMPLE_FILE);
+        let text = std::fs::read_to_string(&espf).unwrap();
+        std::fs::write(&espf, set_chip(&text, "esp32c6").unwrap()).unwrap();
+        let out = dest.join("build");
+        build::execute(&BuildArgs {
+            file: Some(espf),
+            out: out.clone(),
+            stage: Stage::Generate,
+            ..Default::default()
+        })
+        .unwrap();
+        let cargo = std::fs::read_to_string(out.join("Cargo.toml")).unwrap();
+        assert!(cargo.contains("\"esp32c6\""));
+    }
 }

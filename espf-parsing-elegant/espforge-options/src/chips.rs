@@ -1,9 +1,22 @@
 //! Chip facts used by validation.
 
+/// Chips `esp-metadata-generated` knows about that espforge has no template
+/// or Wokwi board for yet. Remove an entry once it is supported.
+pub const NOT_YET_SUPPORTED: [&str; 1] = ["esp32p4"];
+
 /// Every chip `esp-metadata-generated` knows, by name.
 pub fn supported_chips() -> Vec<&'static str> {
     esp_metadata_generated::Chip::iter()
         .map(|c| c.name())
+        .collect()
+}
+
+/// The chips to offer in prompts: everything known except
+/// [`NOT_YET_SUPPORTED`].
+pub fn offered_chips() -> Vec<&'static str> {
+    supported_chips()
+        .into_iter()
+        .filter(|c| !NOT_YET_SUPPORTED.contains(c))
         .collect()
 }
 

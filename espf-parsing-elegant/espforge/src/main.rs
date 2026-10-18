@@ -33,9 +33,12 @@ enum Commands {
         after_help = "Examples:\n  espforge build hello.espf --out build\n  espforge build --example 01.Basics/helloworld --stage generate\n  espforge build hello.espf --chip esp32s3 --option alloc=false --write-spec effective.espf"
     )]
     Build(commands::build::BuildArgs),
-    /// Scaffold a new ESPF project.
-    #[command(after_help = "Example:\n  espforge new")]
-    New,
+    /// Scaffold a new ESPF project (asks for what you do not give as flags).
+    #[command(
+        alias = "init",
+        after_help = "Examples:\n  espforge new\n  espforge new my_proj\n  espforge new --yes --chip esp32c3 --runtime blocking my_proj"
+    )]
+    New(commands::new::NewArgs),
     /// Turn an embedded ESPF example into an editable project folder.
     ///
     /// Bare `examples` opens the interactive picker (category → example →
@@ -84,7 +87,7 @@ fn main() -> ExitCode {
     match cli.command {
         Some(Commands::Check { file }) => commands::check::run(&file),
         Some(Commands::Build(args)) => return commands::build::run(args),
-        Some(Commands::New) => commands::new::run(),
+        Some(Commands::New(args)) => return commands::new::run(args),
         Some(Commands::Examples { command }) => match command {
             Some(ExamplesSub::List { category }) => {
                 if let Err(e) = commands::examples::run_list(category.as_deref()) {
