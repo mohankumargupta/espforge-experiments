@@ -425,8 +425,8 @@ REGENERATE:\n\
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::context::RuntimeSource;
     use crate::context::build_context;
-    use crate::rust::RuntimeSource;
     use espforge_model::{Console, Meta, Runtime};
     use espforge_options::{Answers, DerivedInputs};
     use toml_edit::DocumentMut;

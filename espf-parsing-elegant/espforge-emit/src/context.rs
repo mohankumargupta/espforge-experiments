@@ -14,12 +14,23 @@
 //! | `log`          | always `true` (logging is `log` only) |
 //! | `runtime_dep`  | TOML inline table for the `espforge-runtime` dependency |
 
-use crate::rust::{RUNTIME_VERSION, RuntimeSource};
 use anyhow::{Context as _, Result};
 use espforge_model::{Console, Meta, Runtime};
 use espforge_options::{OptValue, ResolvedOptions};
 use minijinja::{Value, context};
 use std::collections::BTreeMap;
+
+/// Version of `espforge-runtime` written into generated manifests.
+pub const RUNTIME_VERSION: &str = "0.1.0";
+
+#[derive(Debug, Clone)]
+pub enum RuntimeSource {
+    /// Use the published crate from crates.io.
+    Published,
+    /// Path to the `espforge-runtime` crate directory, as it should appear
+    /// in the generated Cargo.toml.
+    Path(String),
+}
 
 /// Wokwi board id for a chip (moved out of the old `diagram.json` if-chain).
 pub fn wokwi_board(chip: &str) -> &'static str {

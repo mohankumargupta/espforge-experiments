@@ -1,5 +1,9 @@
 use include_dir::{Dir, include_dir};
 
+/// Version of this template crate. Recorded in `.espforge/manifest.json` so a
+/// generated project says which template produced it.
+pub const VERSION: &str = env!("CARGO_PKG_VERSION");
+
 /// The project template tree, embedded at compile time from `src/template`.
 /// Rendered by `espforge-emit` (see its `render` module).
 pub static TEMPLATE_DIR: Dir = include_dir!("$CARGO_MANIFEST_DIR/src/template");

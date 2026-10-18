@@ -2,20 +2,18 @@
 name = "espforge"
 version = "0.1.0"
 edition = "2024"
-build = "build.rs"
 
 [dependencies]
 espforge-emit = { path = "../espforge-emit" }
+espforge-options = { path = "../espforge-options" }
+# Only for its VERSION constant (`espforge version`).
+espforge-espgenerate-template = { path = "../espforge-espgenerate-template" }
 anyhow = "1"
 espf = { path = "../espf" }
 espforge-bindings = { path = "../espforge-bindings" }
 espforge-model = { path = "../espforge-model" }
 clap = { version = "4", features = ["derive"] }
-semver = "1"
-esp-generate = "1.4"
-# Chip metadata (supported chips, their Rust target triples) used by doctor;
-# pinned to the same version esp-generate 1.4 itself uses so only one copy of
-# the generated data is ever compiled.
+# Chip metadata (supported chips, their Rust target triples) used by doctor.
 esp-metadata-generated = { version = "0.5.3", features = ["build-script"] }
 # Use the same versions your current prototype already builds with.
 winnow = { workspace = true }
@@ -23,5 +21,8 @@ annotate-snippets = { workspace = true }
 cliclack = "0.5.6"
 espforge_examples = { version = "0.1.9", path = "../espforge-examples" }
 
+[dev-dependencies]
+tempfile = "3"
+
 [build-dependencies]
-cargo_metadata = "0.23"
+cargo_metadata = "0.19"

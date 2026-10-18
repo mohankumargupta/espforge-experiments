@@ -1,48 +1,53 @@
-// `espforge doctor`: verifies that prerequisites for scaffolding/building an
-// ESPF project are met:
+// `espforge doctor`: verifies that prerequisites for building an ESPF project
+// are met:
 //
-//   1. `cargo` is installed and runnable (needed to build the scaffolded
-//      project and to install/upgrade `esp-generate` itself).
-//   2. Every RISC-V Rust target needed by any chip `esp-generate` supports is
-//      installed. The chip list and their target triples are read from the
-//      `esp-metadata-generated` crate — the same generated metadata
-//      esp-generate uses to build `esp-generate list-options` — so the check
-//      follows the esp-generate version compiled into this binary instead of
-//      duplicating a hardcoded list here.
-//   3. The `esp-generate` CLI is installed and its version matches the one
-//      espforge was compiled against (resolved by build.rs and embedded via
-//      env!("ESP_GENERATE_VERSION")). A mismatch would make `espforge new`
-//      behave differently from what this build of espforge expects.
+//   1. `cargo` is installed and runnable (needed to build generated projects).
+//   2. Every RISC-V Rust target needed by the chips espforge supports is
+//      installed. Chips and their target triples come from the
+//      `esp-metadata-generated` crate, so the list follows the metadata
+//      compiled into this binary instead of a hardcoded one.
+//   3. (advisory) The `esp` toolchain from espup, needed only for the Xtensa
+//      chips (esp32, esp32s2, esp32s3).
+//   4. (advisory) `espflash` (default flasher) and `probe-rs` (only for
+//      `--option probe-rs=true`).
 //
-// All checks that can be evaluated are run; the command exits:
-//   0 — every check passed
-//   1 — at least one check failed
+// Required checks (1, 2) fail the command; advisory ones only warn.
+//   exit 0 - every required check passed
+//   exit 1 - at least one required check failed
 use std::process::Command;
-use std::str::FromStr;
 
-use semver::Version;
+/// Chips `esp-metadata-generated` knows about that espforge has no template
+/// or Wokwi board for yet. Remove an entry once it is supported.
+const NOT_YET_SUPPORTED: [&str; 1] = ["esp32p4"];
 
-const ESP_GENERATE_CLI: &str = "esp-generate";
-
-/// The exact esp-generate version this espforge build was compiled against,
-/// resolved from the workspace dependency graph by build.rs.
-const COMPILED_ESP_GENERATE_VERSION: &str = env!("ESP_GENERATE_VERSION");
+enum Status {
+    Pass(String),
+    /// Advisory: reported, never fails the command.
+    Warn(String),
+    Fail(String),
+}
 
 pub fn run() {
     println!("espforge doctor");
     println!("===============\n");
 
-    let checks = [
-        ("cargo", check_cargo as fn() -> Result<String, String>),
+    let checks: [(&str, fn() -> Status); 5] = [
+        ("cargo", check_cargo),
         ("rustc targets", check_rustc_targets),
-        (ESP_GENERATE_CLI, check_esp_generate),
+        ("xtensa toolchain", check_xtensa_toolchain),
+        ("espflash", check_espflash),
+        ("probe-rs", check_probe_rs),
     ];
 
-    let mut failed = 0;
+    let (mut failed, mut warned) = (0, 0);
     for (name, check) in checks {
         match check() {
-            Ok(detail) => print_check_details('✔', name, &detail),
-            Err(problem) => {
+            Status::Pass(detail) => print_check_details('✔', name, &detail),
+            Status::Warn(detail) => {
+                warned += 1;
+                print_check_details('!', name, &detail);
+            }
+            Status::Fail(problem) => {
                 failed += 1;
                 print_check_details('✖', name, &problem);
             }
@@ -51,7 +56,11 @@ pub fn run() {
 
     println!();
     if failed == 0 {
-        println!("All prerequisites met.");
+        if warned == 0 {
+            println!("All prerequisites met.");
+        } else {
+            println!("Required prerequisites met ({warned} optional item(s) need attention).");
+        }
     } else {
         println!("✖ {failed} check(s) failed; see the fix hints above.");
         std::process::exit(1);
@@ -79,52 +88,44 @@ fn print_check_details(mark: char, name: &str, details: &str) {
     }
 }
 
-/// Runs `cargo --version` and reports it. Any failure to locate or execute the
-/// binary is reported with the standard install hint.
-fn check_cargo() -> Result<String, String> {
-    version_output("cargo").map_err(|_| {
-        "`cargo` was not found on PATH. Install Rust/cargo: https://rustup.rs".to_owned()
-    })
+/// Runs `cargo --version` and reports it.
+fn check_cargo() -> Status {
+    match version_output("cargo") {
+        Ok(v) => Status::Pass(v),
+        Err(_) => Status::Fail(
+            "`cargo` was not found on PATH. Install Rust/cargo: https://rustup.rs".to_owned(),
+        ),
+    }
 }
 
-/// One RISC-V chip that this build's esp-generate version can scaffold for,
-/// paired with the Rust target triple a project for that chip is built for.
+/// One chip paired with the Rust target triple a project for it is built for.
 struct ChipTarget {
     name: &'static str,
     target: &'static str,
 }
 
-/// Enumerates the RISC-V chips this build's esp-generate version supports.
-///
-/// Candidates come from `esp_metadata_generated::Chip::iter()` and are then
-/// filtered two ways:
-///   * Xtensa-architecture chips are dropped — they are built with the
-///     espup-installed `esp` toolchain rather than a plain rustup target, so
-///     they are not part of this check.
-///   * Chips the compiled-in esp-generate version does not offer for
-///     scaffolding are dropped by matching the name against its `Chip` enum.
-///     This keeps doctor honest if the resolved esp-metadata-generated is
-///     ever newer than esp-generate (e.g. esp32p4 is present in the metadata
-///     but absent from `esp-generate list-options` today).
-///
-/// The list is derived, not hardcoded, so per-chip data stays validated
-/// against `esp-generate list-options` of the esp-generate version this
-/// binary was compiled against.
+fn is_supported(chip: &esp_metadata_generated::Chip) -> bool {
+    !NOT_YET_SUPPORTED.contains(&chip.name())
+}
+
+/// The RISC-V chips espforge supports, from the compiled-in esp-metadata.
+/// Xtensa chips are built with the espup `esp` toolchain, not a rustup
+/// target, so they are covered by [`check_xtensa_toolchain`] instead.
 fn riscv_chip_targets() -> Vec<ChipTarget> {
-    let mut chips = Vec::new();
-    for chip in esp_metadata_generated::Chip::iter() {
-        if chip.is_xtensa() {
-            continue;
-        }
-        if esp_generate::Chip::from_str(chip.name()).is_err() {
-            continue;
-        }
-        chips.push(ChipTarget {
-            name: chip.name(),
-            target: chip.target(),
-        });
-    }
-    chips
+    esp_metadata_generated::Chip::iter()
+        .filter(|c| !c.is_xtensa() && is_supported(c))
+        .map(|c| ChipTarget {
+            name: c.name(),
+            target: c.target(),
+        })
+        .collect()
+}
+
+fn xtensa_chips() -> Vec<&'static str> {
+    esp_metadata_generated::Chip::iter()
+        .filter(|c| c.is_xtensa() && is_supported(c))
+        .map(|c| c.name())
+        .collect()
 }
 
 /// Verifies that every RISC-V target the supported chips compile for is
@@ -134,12 +135,12 @@ fn riscv_chip_targets() -> Vec<ChipTarget> {
 /// but `rustc` is (e.g. a distro toolchain), falls back to compiling an empty
 /// `#![no_std]` probe per target and treating a `core` lookup failure as
 /// "target not installed".
-fn check_rustc_targets() -> Result<String, String> {
+fn check_rustc_targets() -> Status {
     let chips = riscv_chip_targets();
     if chips.is_empty() {
-        return Err(format!(
-            "expected esp-generate {COMPILED_ESP_GENERATE_VERSION} to support at least one RISC-V chip"
-        ));
+        return Status::Fail(
+            "expected esp-metadata to describe at least one RISC-V chip".to_owned(),
+        );
     }
 
     // Collapse chips that share a target triple into groups, in chip order:
@@ -153,7 +154,10 @@ fn check_rustc_targets() -> Result<String, String> {
     }
     let targets: Vec<&str> = groups.iter().map(|(target, _)| *target).collect();
 
-    let installed = installed_targets(&targets)?;
+    let installed = match installed_targets(&targets) {
+        Ok(i) => i,
+        Err(e) => return Status::Fail(e),
+    };
 
     let missing: Vec<&str> = targets
         .iter()
@@ -163,16 +167,13 @@ fn check_rustc_targets() -> Result<String, String> {
 
     // Human-readable report, one line per group:
     //   esp32c2, esp32c3       riscv32imc  ✔ installed
-    let mut report = format!(
-        "RISC-V Rust targets needed by the chips `esp-generate {COMPILED_ESP_GENERATE_VERSION}` scaffolds:"
-    );
+    let mut report = String::from("RISC-V Rust targets needed by the supported chips:");
     for (target, names) in &groups {
         let status = if installed.contains(target) {
             "✔ installed"
         } else {
             "✖ NOT INSTALLED"
         };
-        // Pad the chip-list column so the target columns line up.
         report.push_str(&format!(
             "\n  {:<40} {}  {status}",
             names.join(", "),
@@ -182,7 +183,7 @@ fn check_rustc_targets() -> Result<String, String> {
 
     if missing.is_empty() {
         report.push_str("\nall RISC-V targets installed.");
-        Ok(report)
+        Status::Pass(report)
     } else {
         let add_list = missing.join(" ");
         let short_missing = missing
@@ -190,9 +191,70 @@ fn check_rustc_targets() -> Result<String, String> {
             .map(|t| short_target(t))
             .collect::<Vec<_>>()
             .join(" ");
-        Err(format!(
+        Status::Fail(format!(
             "{report}\n\nmissing: {short_missing}. Fix with:\n  rustup target add {add_list}"
         ))
+    }
+}
+
+/// Advisory: the Xtensa chips need the `esp` toolchain installed by espup.
+fn check_xtensa_toolchain() -> Status {
+    let chips = xtensa_chips();
+    if chips.is_empty() {
+        return Status::Pass("no Xtensa chips are supported by this build".to_owned());
+    }
+    let list = chips.join(", ");
+    let hint = "To build for them:\n  cargo install espup --locked\n  espup install\n  source ~/export-esp.sh";
+
+    if !which("rustup") {
+        return Status::Warn(format!(
+            "rustup not found, so the `esp` toolchain could not be checked (needed only for {list}).\n{hint}"
+        ));
+    }
+    let output = Command::new("rustup").args(["toolchain", "list"]).output();
+    match output {
+        Ok(o) if o.status.success() => {
+            if has_toolchain(&String::from_utf8_lossy(&o.stdout), "esp") {
+                Status::Pass(format!("`esp` toolchain installed (for {list})"))
+            } else {
+                Status::Warn(format!(
+                    "`esp` toolchain not installed; only needed for {list}.\n{hint}"
+                ))
+            }
+        }
+        _ => Status::Warn(format!(
+            "could not run `rustup toolchain list` (needed only for {list}).\n{hint}"
+        )),
+    }
+}
+
+/// Is `name` listed by `rustup toolchain list`? Lines look like `esp` or
+/// `stable-x86_64-unknown-linux-gnu (default)`; only an exact first token counts.
+fn has_toolchain(list: &str, name: &str) -> bool {
+    list.lines()
+        .filter_map(|l| l.split_whitespace().next())
+        .any(|t| t == name)
+}
+
+fn check_espflash() -> Status {
+    check_tool(
+        "espflash",
+        "needed to flash with the default runner: cargo install espflash --locked",
+    )
+}
+
+fn check_probe_rs() -> Status {
+    check_tool(
+        "probe-rs",
+        "only needed for --option probe-rs=true: cargo install probe-rs-tools --locked",
+    )
+}
+
+/// Advisory: an optional tool on PATH.
+fn check_tool(binary: &str, why: &str) -> Status {
+    match version_output(binary) {
+        Ok(v) => Status::Pass(v),
+        Err(_) => Status::Warn(format!("`{binary}` not found; {why}")),
     }
 }
 
@@ -267,50 +329,6 @@ fn target_compiles_no_std(target: &str) -> bool {
     matches!(output, Ok(output) if output.status.success())
 }
 
-/// Runs `esp-generate --version` and compares the installed version against
-/// the one espforge was compiled with (`COMPILED_ESP_GENERATE_VERSION`).
-fn check_esp_generate() -> Result<String, String> {
-    if version_output(ESP_GENERATE_CLI).is_err() {
-        return Err(format!(
-            "{ESP_GENERATE_CLI} was not found on PATH. Install it with:\n  \
-             cargo install {ESP_GENERATE_CLI} --version {COMPILED_ESP_GENERATE_VERSION} --locked"
-        ));
-    }
-
-    let installed = version_output(ESP_GENERATE_CLI).map_err(|_| "unreachable".to_owned())?;
-    parse_version(&installed).ok_or_else(|| {
-        format!(
-            "could not parse a version out of `{ESP_GENERATE_CLI} --version` output: \"{installed}\""
-        )
-    })?;
-
-    let installed_version = parse_version(&installed).map(|v| v.to_string()).unwrap();
-    let compiled = parse_version(COMPILED_ESP_GENERATE_VERSION)
-        .expect("COMPILED_ESP_GENERATE_VERSION is produced by build.rs and must be a valid semver")
-        .to_string();
-
-    if installed_version == compiled {
-        Ok(format!(
-            "{installed_version} (matches the version espforge was compiled with)"
-        ))
-    } else {
-        Err(format!(
-            "installed {installed_version}, but espforge was compiled with {compiled}. Fix with:\n  \
-             cargo install {ESP_GENERATE_CLI} --version {compiled} --locked"
-        ))
-    }
-}
-
-/// Extracts and parses a semver `Version` from a version-reporting string such
-/// as `cargo 1.99.0 (5f94df478 2026-08-27)` or `esp-generate v1.4.0`.
-fn parse_version(version_string: &str) -> Option<Version> {
-    // split_whitespace ignores surrounding whitespace and would ignore any
-    // before the version token anyway, so no explicit trim is needed.
-    version_string
-        .split_whitespace()
-        .find_map(|token| Version::parse(token.trim_start_matches('v')).ok())
-}
-
 /// Returns true if a binary with this name can be located.
 fn which(binary: &str) -> bool {
     std::env::var_os("PATH")
@@ -331,5 +349,45 @@ fn version_output(binary: &str) -> Result<String, String> {
         (true, _) => Ok(stdout),
         (false, true) => Ok(stderr),
         (false, false) => Err(format!("`{binary} --version` produced no output")),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn riscv_targets_come_from_metadata_and_exclude_xtensa() {
+        let chips = riscv_chip_targets();
+        assert!(!chips.is_empty());
+        assert!(chips.iter().any(|c| c.name == "esp32c3"));
+        assert!(chips.iter().all(|c| c.target.starts_with("riscv32")));
+        assert!(chips.iter().all(|c| !NOT_YET_SUPPORTED.contains(&c.name)));
+    }
+
+    #[test]
+    fn xtensa_chips_are_listed_separately() {
+        let x = xtensa_chips();
+        assert!(x.contains(&"esp32s3"), "{x:?}");
+        assert!(!x.contains(&"esp32c3"));
+    }
+
+    #[test]
+    fn toolchain_list_parsing() {
+        let list =
+            "stable-x86_64-unknown-linux-gnu (default)\nesp\nnightly-x86_64-unknown-linux-gnu\n";
+        assert!(has_toolchain(list, "esp"));
+        assert!(!has_toolchain(
+            "stable-x86_64-unknown-linux-gnu (default)\n",
+            "esp"
+        ));
+        // a toolchain merely containing "esp" in its name does not count
+        assert!(!has_toolchain("espressif-custom\n", "esp"));
+    }
+
+    #[test]
+    fn short_target_drops_the_suffix() {
+        assert_eq!(short_target("riscv32imc-unknown-none-elf"), "riscv32imc");
+        assert_eq!(short_target("other"), "other");
     }
 }

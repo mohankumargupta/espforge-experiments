@@ -1,7 +1,5 @@
-/// Print version/build information: the espforge crate version itself, and
-/// the exact version of the esp-generate scaffolding backend espforge was
-/// compiled against (resolved by build.rs).
+/// Print version/build information: the espforge crate version and the
+/// version of the project template it generates from.
 pub fn run() {
-    println!("espforge       {}", env!("CARGO_PKG_VERSION"));
-    println!("esp-generate   {}", env!("ESP_GENERATE_VERSION"));
+    println!("espforge   {}", env!("CARGO_PKG_VERSION"));
 }
