@@ -8,3 +8,4 @@ __pycache__
 /pytest-embedded-experiment/helloworld/firmware.factory.bin
 /espforge.md
 /espforgenext.md
+/espf-parsing-elegant/.esphal/helloworld/build
