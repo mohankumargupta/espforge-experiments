@@ -6,13 +6,16 @@ HELLO WORLD EXAMPLE
   <project name="hello_world" />
   <chip type="esp32c3" />
   <runtime type="blocking" />
-  <console type="UART0" />
-  <options default="true" />
+  <console type="uart" />
+  <options defaults="true" />
 # peripherals
 
 # components
 
 # devices
+
+# services
+
 
 
 

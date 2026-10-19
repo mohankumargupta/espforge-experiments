@@ -3,12 +3,18 @@ export JUST_CHOOSER := "fzf --height=40% --tac --layout=reverse --border"
 default:
   @just --list
 
-espforge dir="/tmp/helloworlddemo":
+espforge dir="/tmp/espforgedemo":
   #!/usr/bin/env bash
+  set -x
   rm -rf {{ dir }}
-  cargo run -- examples
+  mkdir {{ dir }}
+  cargo build
+  runtime_path="/home/pi/junk/espforge-experiments/espf-parsing-elegant/espforge-runtime"
+  espforge examples get 01.Basics/helloworld --out {{ dir }}
   cd {{ dir }}
-  
+  espforge build example.espf.txt --runtime-path $runtime_path 
+  cd build
+  cargo build
 
 version:
   uvx --with=pip esphome version
