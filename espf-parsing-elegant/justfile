@@ -40,6 +40,7 @@ espforgetest out="/tmp/espforgedemo/build":
   }
   EOF
   echo "Running test_esphal.py against the esp-hal firmware in esp-emu..."
+  uv sync
   uv run pytest test_esphal.py --embedded-services idf,espemu --app-path .esphal/helloworld -s
 
 version:
