@@ -54,12 +54,6 @@ pub fn report(name: &str, src: &str, errors: &[EspfError]) {
     );
 }
 
-/// [`report`], then exit with status 1.
-pub fn fail(name: &str, src: &str, errors: &[EspfError]) -> ! {
-    report(name, src, errors);
-    std::process::exit(1);
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

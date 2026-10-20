@@ -1,45 +1,52 @@
-//! `espforge build`: ESPF source -> firmware project (-> `cargo build`).
+//! `espforge build` / `espforge gen`: ESPF source -> firmware project
+//! (-> `cargo build`).
 //!
-//! Pipeline: resolve the source (FILE or `--example`) -> parse -> syntax and
-//! structure errors -> `# espforge` core -> `<options>` -> flag overrides ->
-//! resolve options -> generate -> write -> optional compile.
+//! Pipeline: resolve the source (FILE, `--example`, or the `.espf` in the
+//! current directory) -> `pipeline::validate` (the same as `check`) ->
+//! generate -> write -> optional compile.
+//!
+//! `gen` is this command with `Stage::Generate`; `build` is `Stage::All`.
 //!
 //! Exit codes: 0 success, 1 user errors (diagnostics already printed),
 //! 2 internal / IO failure.
 
 use anyhow::{Context, Result, anyhow};
-use clap::{Args, ValueEnum};
+use clap::Args;
 use espforge_emit::{OverlayFile, RuntimeSource};
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode};
 
 use super::answers::AnswerArgs;
+use super::pipeline::{self, Source};
 use super::{frontend, spec};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, ValueEnum)]
+/// How far the pipeline runs. Not a flag: the `gen` / `build` commands pick it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum Stage {
-    /// Write the project, stop before cargo.
+    /// Write the project, stop before cargo (`gen`).
     Generate,
-    /// Only run `cargo build` in an already generated output directory.
-    Compile,
-    /// Generate, then `cargo build`.
+    /// Generate, then `cargo build` (`build`).
     #[default]
     All,
 }
 
 #[derive(Args, Debug, Clone, Default)]
 pub struct BuildArgs {
-    /// Path to the ESPF project file (app logic: src/app.rs or app/rust/app.rs next to it)
+    /// Path to the ESPF project file (default: the single .espf in the current directory).
+    /// App logic: src/app.rs or app/rust/app.rs next to it
     pub file: Option<PathBuf>,
-    /// Build an embedded example instead of a file, e.g. 01.Basics/helloworld
+    /// Use an embedded example instead of a file, e.g. 01.Basics/helloworld
     #[arg(long, value_name = "CATEGORY/NAME", conflicts_with = "file")]
     pub example: Option<String>,
     /// Output directory for the generated project
     #[arg(short, long, default_value = "build")]
     pub out: PathBuf,
-    /// Which stages to run
-    #[arg(long, value_enum, default_value_t = Stage::All)]
+    /// Set by the command (`gen` / `build`), not by a flag.
+    #[arg(skip)]
     pub stage: Stage,
+    /// Set by `build --release`.
+    #[arg(skip)]
+    pub release: bool,
     /// Use a local espforge-runtime crate instead of the published one
     /// (or set ESPFORGE_RUNTIME_PATH)
     #[arg(long)]
@@ -91,48 +98,8 @@ pub fn run(args: BuildArgs) -> ExitCode {
 
 // -------------------------------------------------------------------- source
 
-struct Source {
-    /// Name used in diagnostics: the path, or `embedded:<category>/<name>`.
-    name: String,
-    text: String,
-    /// Directory of the `.espf` (None for embedded examples).
-    dir: Option<PathBuf>,
-    example: Option<&'static espforge_examples::Example>,
-}
-
 fn resolve_source(args: &BuildArgs) -> Result<Source, Failure> {
-    match (&args.file, &args.example) {
-        (Some(_), Some(_)) => Err(user("give either FILE or --example, not both")),
-        (None, None) => Err(user("give a FILE or --example <category/name>")),
-        (Some(file), None) => {
-            let text = std::fs::read_to_string(file)
-                .map_err(|e| user(format!("cannot read '{}': {e}", file.display())))?;
-            let dir = file
-                .parent()
-                .filter(|p| !p.as_os_str().is_empty())
-                .map(Path::to_path_buf)
-                .unwrap_or_else(|| PathBuf::from("."));
-            Ok(Source {
-                name: file.to_string_lossy().into_owned(),
-                text,
-                dir: Some(dir),
-                example: None,
-            })
-        }
-        (None, Some(path)) => {
-            let ex = espforge_examples::find(path).ok_or_else(|| {
-                user(format!(
-                    "no example '{path}'; run `espforge examples list` to see what is available"
-                ))
-            })?;
-            Ok(Source {
-                name: format!("embedded:{path}"),
-                text: ex.content.clone(),
-                dir: None,
-                example: Some(ex),
-            })
-        }
-    }
+    pipeline::resolve_source(args.file.as_deref(), args.example.as_deref()).map_err(user)
 }
 
 /// Files next to a `.espf` that customise the generated Wokwi setup.
@@ -231,15 +198,19 @@ fn runtime_source(args: &BuildArgs) -> Result<RuntimeSource, Failure> {
     }
 }
 
-fn cargo_build(out: &Path) -> Result<(), Failure> {
+fn cargo_build(out: &Path, release: bool) -> Result<(), Failure> {
     if !out.join("Cargo.toml").is_file() {
         return Err(user(format!(
-            "nothing to compile: {} has no Cargo.toml (generate first)",
+            "nothing to compile: {} has no Cargo.toml",
             out.display()
         )));
     }
-    let status = Command::new("cargo")
-        .arg("build")
+    let mut cmd = Command::new("cargo");
+    cmd.arg("build");
+    if release {
+        cmd.arg("--release");
+    }
+    let status = cmd
         .current_dir(out)
         .status()
         .map_err(|e| Failure::Internal(anyhow!("failed to run cargo: {e}")))?;
@@ -254,60 +225,30 @@ fn cargo_build(out: &Path) -> Result<(), Failure> {
 // ------------------------------------------------------------------ pipeline
 
 pub fn execute(args: &BuildArgs) -> Result<(), Failure> {
-    if args.stage == Stage::Compile {
-        return cargo_build(&args.out);
-    }
-
     let source = resolve_source(args)?;
-    let fe = match frontend::load(&source.text) {
-        Ok(fe) => fe,
-        Err(errors) => {
-            frontend::report(&source.name, &source.text, &errors);
+
+    // Exactly what `check` runs.
+    let checked = match pipeline::validate(&source.text, &args.answers) {
+        Ok(c) => c,
+        Err(invalid) => {
+            invalid.report(&source.name, &source.text);
             return Err(Failure::User);
         }
     };
-
-    // Be explicit rather than silently generating firmware that lacks devices.
-    for name in ["peripherals", "components", "devices", "services"] {
-        if fe.parsed.sections.get(name).is_some_and(|n| !n.is_empty()) {
-            return Err(user(format!(
-                "`# {name}` is not supported by `build` yet (hello-world style projects only)"
-            )));
-        }
-    }
-
-    // Flags win over the file; say so when they actually change something.
-    let mut meta = fe.meta.clone();
-    let mut answers = fe.answers.clone();
-    let mut notes = Vec::new();
-    args.answers
-        .apply_core(&mut meta, &mut notes)
-        .map_err(user)?;
-    args.answers
-        .apply_options(
-            espforge_options::embedded_schema(),
-            &mut answers,
-            &mut notes,
-        )
-        .map_err(user)?;
-    for note in &notes {
+    for note in &checked.notes {
         eprintln!("{note}");
     }
 
-    let resolved = match espforge_options::resolve(&meta, &answers, &fe.derived) {
-        Ok(r) => r,
-        Err(errors) => {
-            frontend::report(&source.name, &source.text, &errors);
-            return Err(Failure::User);
-        }
-    };
+    // Be explicit rather than silently generating firmware that lacks devices.
+    pipeline::buildable(&checked).map_err(user)?;
 
     if let Some(path) = &args.write_spec {
         let doc =
-            spec::effective_document(&fe.parsed.sections, &meta, &answers).map_err(|errors| {
-                frontend::report(&source.name, &source.text, &errors);
-                Failure::User
-            })?;
+            spec::effective_document(&checked.fe.parsed.sections, &checked.meta, &checked.answers)
+                .map_err(|errors| {
+                    frontend::report(&source.name, &source.text, &errors);
+                    Failure::User
+                })?;
         let text = spec::render(&doc).map_err(|e| Failure::Internal(anyhow!("{e}")))?;
         std::fs::write(path, text)
             .map_err(|e| Failure::Internal(anyhow!("cannot write '{}': {e}", path.display())))?;
@@ -322,7 +263,7 @@ pub fn execute(args: &BuildArgs) -> Result<(), Failure> {
         .collect();
     let app = app_logic(&source)?;
 
-    let generated = espforge_emit::generate(&meta, &resolved, &runtime, &overlay)?;
+    let generated = espforge_emit::generate(&checked.meta, &checked.resolved, &runtime, &overlay)?;
     if let Err(e) = espforge_emit::write_all(&args.out, &generated) {
         let msg = format!("{e:#}");
         // An edited machine-owned file is the user's doing, not a bug.
@@ -338,14 +279,14 @@ pub fn execute(args: &BuildArgs) -> Result<(), Failure> {
 
     println!(
         "build: wrote '{}' to {}",
-        meta.crate_name(),
+        checked.meta.crate_name(),
         args.out.display()
     );
     if args.stage == Stage::Generate {
         println!("  next: cd {} && cargo build", args.out.display());
         return Ok(());
     }
-    cargo_build(&args.out)
+    cargo_build(&args.out, args.release)
 }
 
 #[cfg(test)]
@@ -443,6 +384,8 @@ mod tests {
 
     #[test]
     fn source_must_be_exactly_one_of_file_or_example() {
+        // No source at all: looks for a single .espf in the current directory
+        // (the crate dir under `cargo test`, which has none).
         let none = BuildArgs {
             stage: Stage::Generate,
             ..Default::default()
@@ -585,13 +528,8 @@ mod tests {
     }
 
     #[test]
-    fn compile_stage_needs_a_generated_project() {
+    fn cargo_build_needs_a_generated_project() {
         let dir = tempfile::tempdir().unwrap();
-        let args = BuildArgs {
-            out: dir.path().to_path_buf(),
-            stage: Stage::Compile,
-            ..Default::default()
-        };
-        assert!(is_user(execute(&args)));
+        assert!(is_user(cargo_build(dir.path(), false)));
     }
 }

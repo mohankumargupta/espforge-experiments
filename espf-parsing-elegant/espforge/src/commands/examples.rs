@@ -11,10 +11,11 @@
 //! `build --stage generate` on the folder. It never builds silently, and it
 //! always prints the `next:` line.
 //!
-//! The subcommands `list` / `get` are the plumbing surface from `cli.md`:
-//! non-interactive, plain output, they only delegate to `espforge_examples`.
-//! Porcelain never duplicates plumbing logic: picking, defaults and printed
-//! next-steps live here; copying lives in `espforge_examples::materialize`.
+//! The subcommands `categories` / `list` / `get` are the plumbing surface from
+//! `cli.md`: non-interactive, plain output, they only delegate to
+//! `espforge_examples`. Porcelain never duplicates plumbing logic: picking,
+//! defaults and printed next-steps live here; copying lives in
+//! `espforge_examples::materialize`.
 use std::io;
 use std::ops::Range;
 use std::path::Path;
@@ -208,7 +209,20 @@ pub fn set_chip(src: &str, chip: &str) -> Option<String> {
     ))
 }
 
-/// `examples list [category]`: plain `category/name<TAB>title` lines.
+/// `examples categories`: plain `category<TAB>N examples` lines.
+pub fn run_categories() -> anyhow::Result<()> {
+    let categories = espforge_examples::categories();
+    if categories.is_empty() {
+        anyhow::bail!("no examples are embedded in this build");
+    }
+    for category in categories {
+        println!("{}\t{}", category.name, category_hint(category));
+    }
+    Ok(())
+}
+
+/// `examples list [category]`: plain `category/name<TAB>title` lines, for
+/// every example of every category when no category is given.
 pub fn run_list(category: Option<&str>) -> anyhow::Result<()> {
     let lines = espforge_examples::list(category)
         .map_err(|err| anyhow::anyhow!("{err}"))
@@ -299,6 +313,29 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn categories_listing_works_and_counts_match_the_catalog() {
+        assert!(run_categories().is_ok());
+        for c in espforge_examples::categories() {
+            assert!(
+                category_hint(c).starts_with(&c.examples.len().to_string()),
+                "{}",
+                c.name
+            );
+        }
+    }
+
+    #[test]
+    fn list_without_a_category_covers_every_example() {
+        let total: usize = espforge_examples::categories()
+            .iter()
+            .map(|c| c.examples.len())
+            .sum();
+        assert_eq!(espforge_examples::list(None).unwrap().len(), total);
+        assert!(run_list(None).is_ok());
+        assert!(run_list(Some("no-such-category")).is_err());
     }
 
     #[test]
