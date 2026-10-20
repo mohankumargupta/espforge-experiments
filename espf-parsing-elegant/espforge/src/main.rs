@@ -2,6 +2,7 @@ mod commands;
 
 use clap::{Args, CommandFactory, Parser, Subcommand};
 use commands::build::{BuildArgs, Stage};
+use std::ffi::OsString;
 use std::path::PathBuf;
 use std::process::ExitCode;
 
@@ -99,6 +100,43 @@ enum ExamplesSub {
     },
 }
 
+/// Every command name (and alias, and `examples` sub-command) after which a
+/// bare `help` means "show help for that command".
+const COMMAND_NAMES: &[&str] = &[
+    "new",
+    "init",
+    "check",
+    "validate",
+    "build",
+    "gen",
+    "examples",
+    "categories",
+    "list",
+    "get",
+    "doctor",
+    "version",
+];
+
+/// Let `help` stand in for `--help` right after a command name, so
+/// `espforge new help` works like `espforge new --help`.
+///
+/// Only a `help` that directly follows a command name is rewritten:
+/// `espforge help new` is clap's own form, `espforge new myproj help` and
+/// `espforge -C help` keep `help` as a plain argument. The one name you can
+/// no longer give is a project directory called `help` straight after `new`.
+fn expand_help(mut args: Vec<OsString>) -> Vec<OsString> {
+    for i in 2..args.len() {
+        let after_command = args[i - 1]
+            .to_str()
+            .is_some_and(|prev| COMMAND_NAMES.contains(&prev));
+        if args[i] == "help" && after_command {
+            args[i] = OsString::from("--help");
+            break;
+        }
+    }
+    args
+}
+
 fn finish(result: anyhow::Result<()>) -> ExitCode {
     match result {
         Ok(()) => ExitCode::SUCCESS,
@@ -110,7 +148,7 @@ fn finish(result: anyhow::Result<()>) -> ExitCode {
 }
 
 fn main() -> ExitCode {
-    let cli = Cli::parse();
+    let cli = Cli::parse_from(expand_help(std::env::args_os().collect()));
 
     if let Some(dir) = &cli.directory {
         if let Err(e) = std::env::set_current_dir(dir) {
@@ -159,6 +197,72 @@ fn main() -> ExitCode {
                 .print_help()
                 .expect("rendering help should not fail");
             ExitCode::SUCCESS
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn expand(args: &[&str]) -> Vec<String> {
+        expand_help(args.iter().map(OsString::from).collect())
+            .into_iter()
+            .map(|a| a.to_string_lossy().into_owned())
+            .collect()
+    }
+
+    #[test]
+    fn help_after_a_command_becomes_dash_dash_help() {
+        assert_eq!(
+            expand(&["espforge", "new", "help"]),
+            ["espforge", "new", "--help"]
+        );
+        assert_eq!(
+            expand(&["espforge", "init", "help"]),
+            ["espforge", "init", "--help"]
+        );
+        assert_eq!(
+            expand(&["espforge", "build", "help"]),
+            ["espforge", "build", "--help"]
+        );
+        assert_eq!(
+            expand(&["espforge", "examples", "list", "help"]),
+            ["espforge", "examples", "list", "--help"]
+        );
+        assert_eq!(
+            expand(&["espforge", "-C", "dir", "new", "help", "--yes"]),
+            ["espforge", "-C", "dir", "new", "--help", "--yes"]
+        );
+    }
+
+    #[test]
+    fn other_uses_of_the_word_help_are_left_alone() {
+        // clap's own form
+        assert_eq!(
+            expand(&["espforge", "help", "new"]),
+            ["espforge", "help", "new"]
+        );
+        assert_eq!(expand(&["espforge", "help"]), ["espforge", "help"]);
+        // `help` as an ordinary argument
+        assert_eq!(
+            expand(&["espforge", "new", "myproj", "help"]),
+            ["espforge", "new", "myproj", "help"]
+        );
+        assert_eq!(
+            expand(&["espforge", "-C", "help"]),
+            ["espforge", "-C", "help"]
+        );
+    }
+
+    #[test]
+    fn every_command_name_is_a_real_command() {
+        let cmd = Cli::command();
+        for name in [
+            "new", "init", "check", "validate", "build", "gen", "examples", "doctor", "version",
+        ] {
+            assert!(COMMAND_NAMES.contains(&name), "{name}");
+            assert!(cmd.find_subcommand(name).is_some(), "{name}");
         }
     }
 }
